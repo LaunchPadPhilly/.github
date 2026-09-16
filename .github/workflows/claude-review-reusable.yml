@@ -1,0 +1,160 @@
+name: Claude Review (reusable)
+
+# Shared implementation, called by claude-review.yml in each participating
+# repo via `workflow_call` + `secrets: inherit`. Do not call this workflow
+# directly from outside another workflow's `uses:` — it has no `on:` trigger
+# of its own besides workflow_call.
+#
+# What this does, in order:
+#   1. Checks out the calling repo's PR head.
+#   2. Pulls the thermo-nuclear-code-quality-review skill from THIS repo
+#      (LaunchPadPhilly/.github) via a sparse checkout, so the skill lives
+#      in exactly one place instead of being copy-pasted into every caller.
+#   3. Runs Claude Review on the Pro/Max subscription (CLAUDE_CODE_OAUTH_TOKEN).
+#      continue-on-error so a subscription-side failure (missing secret,
+#      auth issue, rate limit, quota exhaustion) falls through to step 4
+#      instead of failing the job outright.
+#   4. Only if step 3 wasn't a success AND ANTHROPIC_API_KEY is set: reruns
+#      the same review, billed at API rates instead of the subscription.
+#      This is the one path that costs API-metered money.
+#   5. Only if step 4 actually ran: checks Christian Kunkel's Slack DM
+#      history for a bot message in the last 20 minutes. If one exists,
+#      skips — this is the anti-spam debounce. If not, posts the alert.
+#      The debounce reads real Slack message history (not local/cache
+#      state), so it holds correctly across all five calling repos at once,
+#      not just per-repo — a burst across multiple repos in the same
+#      20-minute window still produces exactly one DM.
+#
+# In every case, the review itself (steps 3/4) posts only a COMMENT-type PR
+# review — never APPROVE or REQUEST_CHANGES. Merge approval stays a human
+# call; branch protection on each calling repo is the structural backstop,
+# not this workflow.
+#
+# Secrets expected from the caller via `secrets: inherit`:
+#   CLAUDE_CODE_OAUTH_TOKEN  — subscription auth (primary path)
+#   ANTHROPIC_API_KEY        — API auth (fallback only)
+#   SLACK_BOT_TOKEN          — bot token, chat:write + im:history scopes,
+#                              from the LaunchPadPhilly-workspace Slack app
+#                              used for CI alerts (NOT the consumer "Claude"
+#                              Slack app already installed — that app has no
+#                              bot token usable here)
+
+on:
+  workflow_call: {}
+
+env:
+  CHRISTIAN_SLACK_USER_ID: U098U6R7WE5
+  DEBOUNCE_WINDOW_SECONDS: 1200 # 20 minutes
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    env:
+      CLAUDE_REVIEW_PROMPT: |
+        Invoke the thermo-nuclear-code-quality-review skill (Skill tool,
+        skill: "thermo-nuclear-code-quality-review") against this PR's diff
+        versus its base branch.
+
+        Post your findings as a single PR review with event type COMMENT.
+        Do NOT approve this PR and do NOT request changes as a formal review
+        state — this review is advisory only. A human reviewer is the merge
+        gate, not you.
+      CLAUDE_ALLOWED_TOOLS: >-
+        Skill,Read,Grep,Glob,
+        mcp__github__pull_request_read,
+        mcp__github__add_comment_to_pending_review,
+        mcp__github__pull_request_review_write
+      CLAUDE_DISALLOWED_TOOLS: >-
+        mcp__github__merge_pull_request,
+        mcp__github__update_pull_request,
+        mcp__github__create_or_update_file,
+        mcp__github__push_files,
+        mcp__github__delete_file
+    steps:
+      - name: Checkout PR
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Fetch shared thermo-nuclear skill
+        uses: actions/checkout@v6
+        with:
+          repository: LaunchPadPhilly/.github
+          path: .shared-org
+          sparse-checkout: |
+            .claude/skills/thermo-nuclear-code-quality-review
+          sparse-checkout-cone-mode: false
+
+      - name: Install shared skill into workspace
+        run: |
+          set -euo pipefail
+          mkdir -p .claude/skills
+          cp -r .shared-org/.claude/skills/thermo-nuclear-code-quality-review .claude/skills/
+          # .shared-org is left in place; it's inside the ephemeral runner
+          # workspace and torn down with it, no cleanup needed here.
+
+      - name: Claude Review (subscription)
+        id: claude-oauth
+        if: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}
+        continue-on-error: true
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          mode: agent
+          prompt: ${{ env.CLAUDE_REVIEW_PROMPT }}
+          allowed_tools: ${{ env.CLAUDE_ALLOWED_TOOLS }}
+          disallowed_tools: ${{ env.CLAUDE_DISALLOWED_TOOLS }}
+
+      - name: Claude Review (API fallback — bills API rate, not subscription)
+        id: claude-api
+        if: steps.claude-oauth.outcome != 'success' && secrets.ANTHROPIC_API_KEY != ''
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          mode: agent
+          prompt: ${{ env.CLAUDE_REVIEW_PROMPT }}
+          allowed_tools: ${{ env.CLAUDE_ALLOWED_TOOLS }}
+          disallowed_tools: ${{ env.CLAUDE_DISALLOWED_TOOLS }}
+
+      - name: Check recent Slack alert (20-minute debounce)
+        id: debounce
+        if: steps.claude-api.conclusion != 'skipped'
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          bot_user_id=$(curl -sf -H "Authorization: Bearer ${SLACK_BOT_TOKEN}" \
+            https://slack.com/api/auth.test | jq -r '.user_id')
+
+          dm_channel=$(curl -sf -H "Authorization: Bearer ${SLACK_BOT_TOKEN}" \
+            -H "Content-type: application/x-www-form-urlencoded" \
+            --data "users=${CHRISTIAN_SLACK_USER_ID}" \
+            https://slack.com/api/conversations.open | jq -r '.channel.id')
+
+          oldest=$(( $(date +%s) - DEBOUNCE_WINDOW_SECONDS ))
+
+          recent=$(curl -sf -H "Authorization: Bearer ${SLACK_BOT_TOKEN}" \
+            "https://slack.com/api/conversations.history?channel=${dm_channel}&oldest=${oldest}&limit=20" \
+            | jq --arg bot "$bot_user_id" '[.messages[]? | select(.user == $bot)] | length > 0')
+
+          echo "dm_channel=${dm_channel}" >> "$GITHUB_OUTPUT"
+          if [ "$recent" = "true" ]; then
+            echo "should_send=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "should_send=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Notify Christian Kunkel — API billing fallback used
+        if: steps.claude-api.conclusion != 'skipped' && steps.debounce.outputs.should_send == 'true'
+        uses: slackapi/slack-github-action@v2.0.0
+        with:
+          method: chat.postMessage
+          token: ${{ secrets.SLACK_BOT_TOKEN }}
+          payload: |
+            channel: "${{ steps.debounce.outputs.dm_channel }}"
+            text: ":warning: *Claude Review* on `${{ github.repository }}` PR #${{ github.event.pull_request.number }} used *API billing* instead of the Pro/Max subscription — the subscription OAuth token was missing or the call failed. <${{ github.event.pull_request.html_url }}|View PR> · <${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View run>
+              (Suppressing repeat DMs for ${{ env.DEBOUNCE_WINDOW_SECONDS }}s across all repos using this workflow — this is not necessarily the first fallback in that window, just the first DM.)
