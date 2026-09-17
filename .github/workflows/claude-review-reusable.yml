@@ -31,13 +31,20 @@ name: Claude Review (reusable)
 # not this workflow.
 #
 # Secrets expected from the caller via `secrets: inherit`:
-#   CLAUDE_CODE_OAUTH_TOKEN  — subscription auth (primary path)
-#   ANTHROPIC_API_KEY        — API auth (fallback only)
-#   SLACK_BOT_TOKEN          — bot token, chat:write + im:history scopes,
-#                              from the LaunchPadPhilly-workspace Slack app
-#                              used for CI alerts (NOT the consumer "Claude"
-#                              Slack app already installed — that app has no
-#                              bot token usable here)
+#   CLAUDE_CODE_OAUTH_TOKEN     — subscription auth (primary path)
+#   ANTHROPIC_API_KEY           — API auth (fallback only)
+#   SLACK_BOT_TOKEN             — bot token, chat:write + im:history scopes,
+#                                 from the LaunchPadPhilly-workspace Slack app
+#                                 used for CI alerts (NOT the consumer "Claude"
+#                                 Slack app already installed — that app has no
+#                                 bot token usable here)
+#   ORG_SKILLS_APP_ID           — App ID (4980186) of lp-shared-skill-reader,
+#                                 a GitHub App installed org-wide with
+#                                 Contents: Read-only on LaunchPadPhilly/.github
+#                                 only. Used to mint a short-lived token so the
+#                                 sparse checkout below can read this repo's
+#                                 .claude/skills/ from a caller repo's job.
+#   ORG_SKILLS_APP_PRIVATE_KEY  — that App's private key (.pem contents)
 
 on:
   workflow_call: {}
@@ -79,10 +86,26 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Generate skills-read App token
+        # actions/checkout's default GITHUB_TOKEN is scoped to the calling
+        # repo only -- it can't read LaunchPadPhilly/.github (a separate
+        # private repo) even within the same org. Mint a short-lived
+        # installation token from the lp-shared-skill-reader GitHub App
+        # (App ID 4980186, installed org-wide with Contents: Read-only on
+        # .github only) instead of a long-lived PAT.
+        id: skills-app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ secrets.ORG_SKILLS_APP_ID }}
+          private-key: ${{ secrets.ORG_SKILLS_APP_PRIVATE_KEY }}
+          owner: LaunchPadPhilly
+          repositories: .github
+
       - name: Fetch shared thermo-nuclear skill
         uses: actions/checkout@v6
         with:
           repository: LaunchPadPhilly/.github
+          token: ${{ steps.skills-app-token.outputs.token }}
           path: .shared-org
           sparse-checkout: |
             .claude/skills/thermo-nuclear-code-quality-review
