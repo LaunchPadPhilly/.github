@@ -59,8 +59,18 @@ jobs:
     permissions:
       contents: read
       pull-requests: write
+      # claude-code-action probes for a GitHub OIDC token as part of its
+      # provider-auth discovery even when using claude_code_oauth_token/
+      # anthropic_api_key (not workload identity federation) -- observed
+      # failing with "Could not fetch an OIDC token" on every live run
+      # without this permission. Granting it doesn't broaden repo access,
+      # just lets the job request an OIDC token if the action asks for one.
+      id-token: write
     env:
       CLAUDE_REVIEW_PROMPT: |
+        REPO: ${{ github.repository }}
+        PR NUMBER: ${{ github.event.pull_request.number }}
+
         Invoke the thermo-nuclear-code-quality-review skill (Skill tool,
         skill: "thermo-nuclear-code-quality-review") against this PR's diff
         versus its base branch.
@@ -142,10 +152,10 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          mode: agent
           prompt: ${{ env.CLAUDE_REVIEW_PROMPT }}
-          allowed_tools: ${{ env.CLAUDE_ALLOWED_TOOLS }}
-          disallowed_tools: ${{ env.CLAUDE_DISALLOWED_TOOLS }}
+          claude_args: |
+            --allowedTools ${{ env.CLAUDE_ALLOWED_TOOLS }}
+            --disallowedTools ${{ env.CLAUDE_DISALLOWED_TOOLS }}
 
       - name: Claude Review (API fallback — bills API rate, not subscription)
         id: claude-api
@@ -153,10 +163,10 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-          mode: agent
           prompt: ${{ env.CLAUDE_REVIEW_PROMPT }}
-          allowed_tools: ${{ env.CLAUDE_ALLOWED_TOOLS }}
-          disallowed_tools: ${{ env.CLAUDE_DISALLOWED_TOOLS }}
+          claude_args: |
+            --allowedTools ${{ env.CLAUDE_ALLOWED_TOOLS }}
+            --disallowedTools ${{ env.CLAUDE_DISALLOWED_TOOLS }}
 
       - name: Check recent Slack alert (20-minute debounce)
         id: debounce
