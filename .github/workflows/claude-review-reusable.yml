@@ -96,9 +96,25 @@ jobs:
           # .shared-org is left in place; it's inside the ephemeral runner
           # workspace and torn down with it, no cleanup needed here.
 
+      - name: Resolve auth mode
+        # Reusable workflows called via `secrets: inherit` (no explicit
+        # `on.workflow_call.secrets`) can't reference the `secrets` context
+        # from an `if:` conditional — GitHub rejects it at parse time
+        # ("Unrecognized named-value: 'secrets'"), which fails the whole
+        # workflow before any job runs. `secrets` IS allowed in a step's
+        # `env:`, so resolve presence here and gate later steps on this
+        # step's outputs instead.
+        id: auth
+        env:
+          OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          echo "has_oauth_token=$([ -n "$OAUTH_TOKEN" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          echo "has_api_key=$([ -n "$API_KEY" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
       - name: Claude Review (subscription)
         id: claude-oauth
-        if: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}
+        if: steps.auth.outputs.has_oauth_token == 'true'
         continue-on-error: true
         uses: anthropics/claude-code-action@v1
         with:
@@ -110,7 +126,7 @@ jobs:
 
       - name: Claude Review (API fallback — bills API rate, not subscription)
         id: claude-api
-        if: steps.claude-oauth.outcome != 'success' && secrets.ANTHROPIC_API_KEY != ''
+        if: steps.claude-oauth.outcome != 'success' && steps.auth.outputs.has_api_key == 'true'
         uses: anthropics/claude-code-action@v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
