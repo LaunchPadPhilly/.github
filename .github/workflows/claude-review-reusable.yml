@@ -7,51 +7,39 @@ name: Claude Review (reusable)
 #
 # What this does, in order:
 #   1. Checks out the calling repo's PR head.
-#   2. Pulls the thermo-nuclear-code-quality-review skill from THIS repo
-#      (LaunchPadPhilly/.github) via a sparse checkout, so the skill lives
-#      in exactly one place instead of being copy-pasted into every caller.
-#   3. Runs Claude Review on the Pro/Max subscription (CLAUDE_CODE_OAUTH_TOKEN).
-#      continue-on-error so a subscription-side failure (missing secret,
-#      auth issue, rate limit, quota exhaustion) falls through to step 4
-#      instead of failing the job outright.
-#   4. Only if step 3 wasn't a success AND ANTHROPIC_API_KEY is set: reruns
-#      the same review, billed at API rates instead of the subscription.
-#      This is the one path that costs API-metered money.
-#   5. Only if step 4 actually ran: checks Christian Kunkel's Slack DM
-#      history for a bot message in the last 20 minutes. If one exists,
-#      skips — this is the anti-spam debounce. If not, posts the alert.
-#      The debounce reads real Slack message history (not local/cache
-#      state), so it holds correctly across all five calling repos at once,
-#      not just per-repo — a burst across multiple repos in the same
-#      20-minute window still produces exactly one DM.
+#   2. Runs Claude Review on the Pro/Max subscription (CLAUDE_CODE_OAUTH_TOKEN)
+#      with the thermo-nuclear-code-quality-review prompt inlined below.
 #
-# In every case, the review itself (steps 3/4) posts only a COMMENT-type PR
-# review — never APPROVE or REQUEST_CHANGES. Merge approval stays a human
-# call; branch protection on each calling repo is the structural backstop,
-# not this workflow.
+# The review posts only a COMMENT-type PR review — never APPROVE or REQUEST_
+# CHANGES. Merge approval stays a human call; branch protection on each
+# calling repo is the structural backstop, not this workflow.
 #
-# Secrets expected from the caller via `secrets: inherit`:
-#   CLAUDE_CODE_OAUTH_TOKEN     — subscription auth (primary path)
-#   ANTHROPIC_API_KEY           — API auth (fallback only)
-#   SLACK_BOT_TOKEN             — bot token, chat:write + im:history scopes,
-#                                 from the LaunchPadPhilly-workspace Slack app
-#                                 used for CI alerts (NOT the consumer "Claude"
-#                                 Slack app already installed — that app has no
-#                                 bot token usable here)
-#   ORG_SKILLS_APP_ID           — App ID (4980186) of lp-shared-skill-reader,
-#                                 a GitHub App installed org-wide with
-#                                 Contents: Read-only on LaunchPadPhilly/.github
-#                                 only. Used to mint a short-lived token so the
-#                                 sparse checkout below can read this repo's
-#                                 .claude/skills/ from a caller repo's job.
-#   ORG_SKILLS_APP_PRIVATE_KEY  — that App's private key (.pem contents)
+# If the subscription call fails (missing/revoked token, rate limit, quota
+# exhaustion), this job fails and shows red on the PR check — on purpose.
+# An earlier version of this workflow silently fell back to metered
+# API-key billing plus a bespoke Slack DM alert when the subscription path
+# failed; that fallback (a) required a dedicated GitHub App + org secrets
+# to mint a token just to sparse-checkout one shared prompt file out of
+# this repo, and (b) was the actual cause of every real-world failure this
+# workflow hit in its first two days — including "green" runs that had
+# silently failed to load the skill and done an ad hoc review instead. A
+# visible red check with a clear log is simpler and more honest than a
+# silent metered-billing fallback; if per-repo cost control turns out to
+# matter enough to bring API fallback back, do it deliberately and test it
+# for real (grep the run log, don't trust the exit code) rather than
+# re-adding the same shape of complexity.
+#
+# The prompt text below is sourced from this repo's
+# .claude/skills/thermo-nuclear-code-quality-review/SKILL.md — keep that
+# file's "Core Prompt" + "Non-Negotiable Additional Standards" section in
+# sync if you edit either copy. SKILL.md stays in the repo as the
+# documented/readable source; this file is what actually runs.
+#
+# Secret expected from the caller via `secrets: inherit`:
+#   CLAUDE_CODE_OAUTH_TOKEN — subscription auth, the only auth path.
 
 on:
   workflow_call: {}
-
-env:
-  CHRISTIAN_SLACK_USER_ID: U098U6R7WE5
-  DEBOUNCE_WINDOW_SECONDS: 1200 # 20 minutes
 
 jobs:
   review:
@@ -60,27 +48,63 @@ jobs:
       contents: read
       pull-requests: write
       # claude-code-action probes for a GitHub OIDC token as part of its
-      # provider-auth discovery even when using claude_code_oauth_token/
-      # anthropic_api_key (not workload identity federation) -- observed
-      # failing with "Could not fetch an OIDC token" on every live run
-      # without this permission. Granting it doesn't broaden repo access,
-      # just lets the job request an OIDC token if the action asks for one.
+      # provider-auth discovery even when using claude_code_oauth_token
+      # (not workload identity federation) -- observed failing with
+      # "Could not fetch an OIDC token" on every live run without this
+      # permission. Granting it doesn't broaden repo access, just lets the
+      # job request an OIDC token if the action asks for one.
       id-token: write
     env:
       CLAUDE_REVIEW_PROMPT: |
         REPO: ${{ github.repository }}
         PR NUMBER: ${{ github.event.pull_request.number }}
 
-        Invoke the thermo-nuclear-code-quality-review skill (Skill tool,
-        skill: "thermo-nuclear-code-quality-review") against this PR's diff
-        versus its base branch.
+        Perform a deep code quality audit of this PR's diff versus its base
+        branch, focused on implementation quality, maintainability,
+        abstraction quality, and codebase health. Rethink how to structure
+        the changes to meaningfully improve code quality without impacting
+        behavior. Work to improve abstractions and modularity, reduce
+        spaghetti code, and improve succinctness and legibility. Be
+        ambitious: if there is a clear path to a dramatically simpler
+        restructuring ("code judo" — a reorganization that uses the
+        existing architecture more effectively and deletes whole branches,
+        helpers, or layers rather than just rearranging them), push hard
+        for it rather than settling for local cleanup. Be extremely
+        thorough and rigorous. Measure twice, cut once.
+
+        Apply these standards:
+        - Flag a file crossing from under 1000 lines to over 1000 lines
+          without a strong reason; prefer decomposition first.
+        - Flag ad-hoc conditionals, scattered special cases, or one-off
+          branches bolted onto existing flows; prefer a dedicated
+          abstraction, helper, or module instead.
+        - Bias toward the cleaner design over rubber-stamping "it works";
+          prefer simplifications that remove moving pieces over refactors
+          that just spread the same complexity around.
+        - Prefer direct, boring, maintainable code over hacky or magical
+          mechanisms; flag thin/identity wrappers that add indirection
+          without clarity.
+        - Push on type and boundary cleanliness: question unnecessary
+          optionality, `unknown`/`any`, or cast-heavy code; prefer explicit
+          typed models over ad-hoc shapes.
+        - Flag feature logic leaking into shared/canonical paths; prefer
+          existing canonical helpers over bespoke one-offs.
+        - Flag unnecessary sequential orchestration or non-atomic updates
+          when a more parallel or atomic structure is clearly better.
+
+        Prioritize findings in this order: structural regressions, missed
+        dramatic-simplification opportunities, spaghetti/branching growth,
+        boundary/type problems, file-size/decomposition, modularity, then
+        legibility. Prefer a small number of high-conviction comments over
+        a long list of cosmetic nits. Do not soften major maintainability
+        issues into mild suggestions, but stay direct rather than rude.
 
         Post your findings as a single PR review with event type COMMENT.
         Do NOT approve this PR and do NOT request changes as a formal review
         state — this review is advisory only. A human reviewer is the merge
         gate, not you.
       CLAUDE_ALLOWED_TOOLS: >-
-        Skill,Read,Grep,Glob,
+        Read,Grep,Glob,
         mcp__github__pull_request_read,
         mcp__github__add_comment_to_pending_review,
         mcp__github__pull_request_review_write
@@ -96,59 +120,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Generate skills-read App token
-        # actions/checkout's default GITHUB_TOKEN is scoped to the calling
-        # repo only -- it can't read LaunchPadPhilly/.github (a separate
-        # private repo) even within the same org. Mint a short-lived
-        # installation token from the lp-shared-skill-reader GitHub App
-        # (App ID 4980186, installed org-wide with Contents: Read-only on
-        # .github only) instead of a long-lived PAT.
-        id: skills-app-token
-        uses: actions/create-github-app-token@v3
-        with:
-          app-id: ${{ secrets.ORG_SKILLS_APP_ID }}
-          private-key: ${{ secrets.ORG_SKILLS_APP_PRIVATE_KEY }}
-          owner: LaunchPadPhilly
-          repositories: .github
-
-      - name: Fetch shared thermo-nuclear skill
-        uses: actions/checkout@v6
-        with:
-          repository: LaunchPadPhilly/.github
-          token: ${{ steps.skills-app-token.outputs.token }}
-          path: .shared-org
-          sparse-checkout: |
-            .claude/skills/thermo-nuclear-code-quality-review
-          sparse-checkout-cone-mode: false
-
-      - name: Install shared skill into workspace
-        run: |
-          set -euo pipefail
-          mkdir -p .claude/skills
-          cp -r .shared-org/.claude/skills/thermo-nuclear-code-quality-review .claude/skills/
-          # .shared-org is left in place; it's inside the ephemeral runner
-          # workspace and torn down with it, no cleanup needed here.
-
-      - name: Resolve auth mode
-        # Reusable workflows called via `secrets: inherit` (no explicit
-        # `on.workflow_call.secrets`) can't reference the `secrets` context
-        # from an `if:` conditional — GitHub rejects it at parse time
-        # ("Unrecognized named-value: 'secrets'"), which fails the whole
-        # workflow before any job runs. `secrets` IS allowed in a step's
-        # `env:`, so resolve presence here and gate later steps on this
-        # step's outputs instead.
-        id: auth
-        env:
-          OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-        run: |
-          echo "has_oauth_token=$([ -n "$OAUTH_TOKEN" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
-          echo "has_api_key=$([ -n "$API_KEY" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
-
       - name: Claude Review (subscription)
-        id: claude-oauth
-        if: steps.auth.outputs.has_oauth_token == 'true'
-        continue-on-error: true
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -156,54 +128,3 @@ jobs:
           claude_args: |
             --allowedTools ${{ env.CLAUDE_ALLOWED_TOOLS }}
             --disallowedTools ${{ env.CLAUDE_DISALLOWED_TOOLS }}
-
-      - name: Claude Review (API fallback — bills API rate, not subscription)
-        id: claude-api
-        if: steps.claude-oauth.outcome != 'success' && steps.auth.outputs.has_api_key == 'true'
-        uses: anthropics/claude-code-action@v1
-        with:
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-          prompt: ${{ env.CLAUDE_REVIEW_PROMPT }}
-          claude_args: |
-            --allowedTools ${{ env.CLAUDE_ALLOWED_TOOLS }}
-            --disallowedTools ${{ env.CLAUDE_DISALLOWED_TOOLS }}
-
-      - name: Check recent Slack alert (20-minute debounce)
-        id: debounce
-        if: steps.claude-api.conclusion != 'skipped'
-        env:
-          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
-        run: |
-          set -euo pipefail
-
-          bot_user_id=$(curl -sf -H "Authorization: Bearer ${SLACK_BOT_TOKEN}" \
-            https://slack.com/api/auth.test | jq -r '.user_id')
-
-          dm_channel=$(curl -sf -H "Authorization: Bearer ${SLACK_BOT_TOKEN}" \
-            -H "Content-type: application/x-www-form-urlencoded" \
-            --data "users=${CHRISTIAN_SLACK_USER_ID}" \
-            https://slack.com/api/conversations.open | jq -r '.channel.id')
-
-          oldest=$(( $(date +%s) - DEBOUNCE_WINDOW_SECONDS ))
-
-          recent=$(curl -sf -H "Authorization: Bearer ${SLACK_BOT_TOKEN}" \
-            "https://slack.com/api/conversations.history?channel=${dm_channel}&oldest=${oldest}&limit=20" \
-            | jq --arg bot "$bot_user_id" '[.messages[]? | select(.user == $bot)] | length > 0')
-
-          echo "dm_channel=${dm_channel}" >> "$GITHUB_OUTPUT"
-          if [ "$recent" = "true" ]; then
-            echo "should_send=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "should_send=true" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Notify Christian Kunkel — API billing fallback used
-        if: steps.claude-api.conclusion != 'skipped' && steps.debounce.outputs.should_send == 'true'
-        uses: slackapi/slack-github-action@v2.0.0
-        with:
-          method: chat.postMessage
-          token: ${{ secrets.SLACK_BOT_TOKEN }}
-          payload: |
-            channel: "${{ steps.debounce.outputs.dm_channel }}"
-            text: ":warning: *Claude Review* on `${{ github.repository }}` PR #${{ github.event.pull_request.number }} used *API billing* instead of the Pro/Max subscription — the subscription OAuth token was missing or the call failed. <${{ github.event.pull_request.html_url }}|View PR> · <${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View run>
-              (Suppressing repeat DMs for ${{ env.DEBOUNCE_WINDOW_SECONDS }}s across all repos using this workflow — this is not necessarily the first fallback in that window, just the first DM.)
