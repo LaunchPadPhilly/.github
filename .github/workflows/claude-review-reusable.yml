@@ -37,6 +37,18 @@ name: Claude Review (reusable)
 #
 # Secret expected from the caller via `secrets: inherit`:
 #   CLAUDE_CODE_OAUTH_TOKEN — subscription auth, the only auth path.
+#
+# CLAUDE_ALLOWED_TOOLS below lists the actual MCP tool names exposed by the
+# GitHub MCP server that anthropics/claude-code-action@v1 bundles internally
+# — confirmed live on 2026-09-18 by running with show_full_output: true
+# against a throwaway test PR. An earlier version of this file guessed names
+# like mcp__github__pull_request_read / mcp__github__pull_request_review_write,
+# which don't exist on this server; every real run silently failed every
+# tool call ("Claude requested permissions to use mcp__github__get_pull_request,
+# but you haven't granted it yet"), spent real subscription usage, and still
+# exited success with no review ever posted. If you bump claude-code-action's
+# pinned version, re-verify these names the same way before trusting a green
+# check — don't just guess from the tool name shape.
 
 on:
   workflow_call: {}
@@ -105,9 +117,10 @@ jobs:
         gate, not you.
       CLAUDE_ALLOWED_TOOLS: >-
         Read,Grep,Glob,
-        mcp__github__pull_request_read,
-        mcp__github__add_comment_to_pending_review,
-        mcp__github__pull_request_review_write
+        mcp__github__get_pull_request,
+        mcp__github__get_pull_request_diff,
+        mcp__github__get_pull_request_files,
+        mcp__github__create_and_submit_pull_request_review
       CLAUDE_DISALLOWED_TOOLS: >-
         mcp__github__merge_pull_request,
         mcp__github__update_pull_request,
