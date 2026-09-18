@@ -7,28 +7,27 @@ drifts across repos.
 ## Claude Review
 
 `.github/workflows/claude-review-reusable.yml` is a `workflow_call`
-target that runs an automatic, review-only Claude pass
-(`thermo-nuclear-code-quality-review`, vendored in
-`.claude/skills/` here) on every PR in a calling repo. It never
-approves or requests changes — only posts a `COMMENT`-type review.
-Full design notes are in the reusable workflow's header comment.
+target that runs an automatic, review-only Claude pass on every PR in
+a calling repo. It never approves or requests changes — only posts a
+`COMMENT`-type review. The review prompt (thermo-nuclear code quality
+standards) is inlined directly in the workflow file; the readable
+source of that prompt is kept at
+`.claude/skills/thermo-nuclear-code-quality-review/SKILL.md` — keep
+both in sync if you edit the standards. Full design notes are in the
+reusable workflow's header comment.
 
-Bills a Claude Pro/Max subscription first (`CLAUDE_CODE_OAUTH_TOKEN`),
-falls back to API billing only if that's unset or fails
-(`ANTHROPIC_API_KEY`), and DMs Christian Kunkel on Slack whenever the
-fallback actually runs — debounced to at most once per 20 minutes
-across *all* calling repos combined, by checking real Slack message
-history rather than per-repo local state.
+Bills a Claude Pro/Max subscription (`CLAUDE_CODE_OAUTH_TOKEN`) —
+the only auth path. If that call fails (missing/revoked token, rate
+limit, quota), the job fails and shows red on the PR check, on
+purpose — no silent fallback to metered API billing.
 
 ### Adding this to a new repo
 
 Copy `templates/claude-review-caller.yml` into the target repo as
-`.github/workflows/claude-review.yml`, and ensure these repo secrets
-are set (`Settings → Secrets and variables → Actions`):
+`.github/workflows/claude-review.yml`, and ensure this repo secret is
+set (`Settings → Secrets and variables → Actions`):
 
 - `CLAUDE_CODE_OAUTH_TOKEN`
-- `ANTHROPIC_API_KEY`
-- `SLACK_BOT_TOKEN`
 
 Currently wired up on: `N10AI`, `ImpactEd_AI`, `One_Off_Apparel`,
 `lp-internal-ai-v1`, `elevate215`.
