@@ -35,8 +35,55 @@ name: Claude Review (reusable)
 # sync if you edit either copy. SKILL.md stays in the repo as the
 # documented/readable source; this file is what actually runs.
 #
-# Secret expected from the caller via `secrets: inherit`:
+#   3. Runs a SEPARATE job, `test-review`, implementing
+#      .claude/skills/automated-test-review/SKILL.md. Unlike `review` above,
+#      this job is a real merge gate: it fetches the OpenProject work
+#      package linked in the PR, judges the diff's tests against that
+#      story's outputs and the org's E2E-first testing ground rules, writes
+#      a verdict artifact, and fails the job (red check) if tests are
+#      missing or inadequate. Keep test-review's prompt in sync with
+#      .claude/skills/automated-test-review/SKILL.md the same way.
+#
+# `test-review` talks to OpenProject via OpenProject's own built-in MCP
+# server (Enterprise add-on, enabled on projects.liftofflearning.tech at
+# Administration -> Artificial Intelligence -> Model Context Protocol) —
+# NOT the earlier third-party npm package, and NOT a self-run copy of
+# DDeluca06/openproject-mcp. It's a remote HTTP MCP endpoint at
+# <OPENPROJECT_URL>/mcp, so unlike the GitHub-side tools there's nothing to
+# check out or pin to a commit — one fewer moving part and one fewer
+# secret (OPENPROJECT_MCP_REPO_TOKEN is gone).
+#
+# Tool names CONFIRMED live 2026-09-22 (not a guess): connected to this same
+# instance's Enterprise MCP endpoint via the claude.ai OpenProject connector
+# (OAuth path) in an interactive session and inspected real responses —
+# search_work_packages({page:1}) returned {items:[...40 of 441...], total}
+# where each item has a real `description: {format:"markdown", raw: "..."}`
+# field, exactly what automated-test-review needs to read acceptance
+# criteria. TEST_REVIEW_ALLOWED_TOOLS below names those confirmed tools
+# directly instead of a server-level wildcard.
+#
+# CAUTION — one thing that OAuth-based check above does NOT verify: this
+# job authenticates as a personal API token (Bearer), not OAuth — a
+# different auth path than the one just tested. Confirm with
+# show_full_output: true on a throwaway PR that a bearer personal API token
+# actually authenticates against <OPENPROJECT_URL>/mcp before trusting a
+# green run here, the same discipline that caught the two real
+# GitHub-tool-name bugs below. If it needs Basic auth instead (like the
+# classic APIv3) or doesn't accept personal API tokens at all (requiring
+# the OAuth-application path under Administration -> Authentication ->
+# OAuth applications instead), the "Write OpenProject MCP config" step
+# needs updating accordingly.
+#
+# Secrets expected from the caller via `secrets: inherit`:
 #   CLAUDE_CODE_OAUTH_TOKEN — subscription auth, the only auth path.
+#   OPENPROJECT_URL         — base URL of the OpenProject instance; the MCP
+#                              endpoint is this plus `/mcp`. Org-wide.
+#   OPENPROJECT_API_KEY     — personal API token from
+#                              <OPENPROJECT_URL>/my/access_token, sent as a
+#                              bearer token to the MCP endpoint (see CAUTION
+#                              above). Org-wide; use a dedicated CI/bot
+#                              OpenProject identity with read-only access
+#                              rather than a real person's token.
 #
 # CLAUDE_ALLOWED_TOOLS below lists the actual MCP tool names exposed by the
 # GitHub MCP server that anthropics/claude-code-action@v1 bundles internally
@@ -141,3 +188,121 @@ jobs:
           claude_args: |
             --allowedTools ${{ env.CLAUDE_ALLOWED_TOOLS }}
             --disallowedTools ${{ env.CLAUDE_DISALLOWED_TOOLS }}
+
+  # Separate job from `review` above on purpose: `review` (thermo-nuclear
+  # code quality) stays advisory/COMMENT-only per 01-design.md's hard-learned
+  # decision. `test-review` is a deliberate exception to that decision,
+  # requested to make "no adequate tests" an actual red, merge-blocking
+  # check rather than a comment a human can skim past. See the CAUTION note
+  # in this file's header before wiring OPENPROJECT_API_KEY into any repo.
+  test-review:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      id-token: write
+    env:
+      TEST_REVIEW_PROMPT: |
+        REPO: ${{ github.repository }}
+        PR NUMBER: ${{ github.event.pull_request.number }}
+
+        Invoke the automated-test-review skill (Skill tool, skill:
+        "automated-test-review") against this PR. Follow it exactly: find
+        the linked OpenProject work package, fetch its acceptance criteria,
+        judge the diff's tests against those outputs and the E2E-first
+        ground rules in the skill, write the verdict to
+        .test-review-verdict.json at the repo root, and post a single PR
+        review with event type COMMENT summarizing the verdict. Do NOT
+        approve or request changes as a formal review state — the job
+        failing below is the actual gate.
+
+        If no work package is linked, or it has no acceptance criteria,
+        that alone is a `tests_adequate: false` verdict — do not try to
+        infer requirements from the diff.
+      # openproject tool names below are confirmed real (see this file's
+      # header) — server key "openproject" is our own choice, matching the
+      # key used in the "Write OpenProject MCP config" step. search_work_packages
+      # supports an `id` filter, used to fetch the linked work package;
+      # list_work_package_comments covers acceptance criteria discussed in
+      # comments rather than the description. Still unverified: whether the
+      # CI bearer-token auth path (vs. the OAuth path these names were
+      # confirmed against) can reach these same tools — see CAUTION above.
+      TEST_REVIEW_ALLOWED_TOOLS: >-
+        Skill,Read,Grep,Glob,Write,
+        mcp__github__get_pull_request,
+        mcp__github__get_pull_request_diff,
+        mcp__github__get_pull_request_files,
+        mcp__github__create_and_submit_pull_request_review,
+        mcp__openproject__search_work_packages,
+        mcp__openproject__list_work_package_comments
+      TEST_REVIEW_DISALLOWED_TOOLS: >-
+        mcp__github__merge_pull_request,
+        mcp__github__update_pull_request,
+        mcp__github__create_or_update_file,
+        mcp__github__push_files,
+        mcp__github__delete_file
+    steps:
+      - name: Checkout PR
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      # OpenProject's own hosted MCP server — a remote HTTP endpoint, so
+      # unlike the earlier design there's nothing to check out or pin here.
+      # Written to a file rather than inlined into claude_args so the API
+      # key never appears as a command-line argument (which shells /
+      # process listings / accidental verbose-logging can leak — this repo
+      # already had one scare with a debug flag surfacing more than
+      # intended, see PR #8/#10). GITHUB_TOKEN-style masking covers
+      # `secrets.*` in step *output*, but does not reliably cover every
+      # place a raw command line might get echoed, so avoid the exposure
+      # instead of relying on masking.
+      #
+      # Auth header UNVERIFIED — see the CAUTION block in this file's
+      # header. Update this if OpenProject's MCP endpoint turns out to need
+      # Basic auth (username "apikey", like the classic APIv3) instead of a
+      # bearer token.
+      - name: Write OpenProject MCP config
+        env:
+          OPENPROJECT_URL: ${{ secrets.OPENPROJECT_URL }}
+          OPENPROJECT_API_KEY: ${{ secrets.OPENPROJECT_API_KEY }}
+        run: |
+          set -euo pipefail
+          jq -n \
+            --arg url "${OPENPROJECT_URL%/}/mcp" \
+            --arg auth "Bearer ${OPENPROJECT_API_KEY}" \
+            '{mcpServers:{openproject:{type:"http",url:$url,headers:{Authorization:$auth}}}}' \
+            > "$RUNNER_TEMP/openproject-mcp-config.json"
+
+      - name: Claude Test Review (subscription)
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: ${{ env.TEST_REVIEW_PROMPT }}
+          claude_args: |
+            --mcp-config ${{ runner.temp }}/openproject-mcp-config.json
+            --allowedTools ${{ env.TEST_REVIEW_ALLOWED_TOOLS }}
+            --disallowedTools ${{ env.TEST_REVIEW_DISALLOWED_TOOLS }}
+
+      - name: Upload test-review verdict artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-review-verdict
+          path: .test-review-verdict.json
+          if-no-files-found: warn
+
+      - name: Enforce test-adequacy verdict
+        run: |
+          set -euo pipefail
+          if [ ! -f .test-review-verdict.json ]; then
+            echo "::error::automated-test-review produced no verdict file — treating as failed (no evidence tests were checked)."
+            exit 1
+          fi
+          adequate=$(jq -r '.tests_adequate' .test-review-verdict.json)
+          echo "--- test-review verdict ---"
+          jq . .test-review-verdict.json
+          if [ "$adequate" != "true" ]; then
+            echo "::error::tests_adequate=false — see the verdict artifact and the PR review comment for what's missing."
+            exit 1
+          fi

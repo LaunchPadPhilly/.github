@@ -1,11 +1,13 @@
 name: Claude Review
 
-# Thin caller — the actual logic (subscription-first Claude review, API
-# fallback, debounced Slack alert to Christian Kunkel) lives in
+# Thin caller — the actual logic (advisory code-quality review, plus a
+# separate merge-blocking automated-test-review job) lives in
 # LaunchPadPhilly/.github's claude-review-reusable.yml so all participating
 # repos share one implementation instead of five copies that can drift.
 # See that file's header comment for the full design, and this org's
-# .github repo README for the secrets this repo must have set.
+# .github repo README for the secrets this repo must have set — including,
+# for test-review, adding that job as a required status check in this
+# repo's branch protection.
 
 on:
   pull_request:
