@@ -23,15 +23,18 @@ purpose — no silent fallback to metered API billing.
 
 ## Automated Test Review
 
-A second, separate job in the same reusable workflow —
-`.claude/skills/automated-test-review/SKILL.md` — judges whether a PR's
+A second, separate job in the same reusable workflow judges whether a PR's
 tests actually verify the outputs committed to by its linked OpenProject
 work package, against the org's E2E-first testing ground rules (real paths
 over mocks, verifiable/repeatable artifacts, no tautological or
 narrowly-pinned regression tests). Unlike Claude Review above, **this one
 is a real merge gate**: it fails the job (red check) when tests are
 missing or inadequate, and uploads a `test-review-verdict` JSON artifact
-either way so the verdict is inspectable, not just a checkmark.
+either way so the verdict is inspectable, not just a checkmark. The ground
+rules are inlined directly in the workflow file (same reason as the
+`review` job's prompt — see its header comment); the readable source is
+kept at `.claude/skills/automated-test-review/SKILL.md` — keep both in
+sync if you edit the standards.
 
 The companion dev-facing skill, `.claude/skills/test-creation/SKILL.md`,
 writes tests against the same ground rules from an OpenProject work
@@ -46,15 +49,15 @@ a remote HTTP endpoint at `<OPENPROJECT_URL>/mcp`, not a third-party npm
 package or a self-run copy of any community/personal MCP server. Nothing
 to check out or pin in this job as a result.
 
-Tool names (`search_work_packages`, `list_work_package_comments`, ...) are
-confirmed live — connected via the claude.ai OpenProject connector's OAuth
-path and inspected real responses, not guessed. **Still unverified:** CI
-authenticates with a personal API token (Bearer), a different auth path
-than the OAuth one just tested — confirm that actually reaches the same
-tools with `show_full_output: true` on a throwaway PR before relying on
-this job, same discipline that caught the two real GitHub-tool-name bugs
-in `review`'s rollout. See the CAUTION block in
-`claude-review-reusable.yml`'s header.
+**Fully verified end-to-end (2026-09-22)** on a throwaway PR
+(`LaunchPadPhilly/claude-review-ci-test` #2): the bearer personal-API-token
+auth path reaches `<OPENPROJECT_URL>/mcp`, tool names
+(`search_work_packages`, `list_work_package_comments`, ...) work as
+confirmed, the verdict correctly cites real OpenProject acceptance
+criteria, and a `COMMENT`-type PR review gets posted. Getting there
+surfaced and fixed three independent, stacked bugs — see the CONFIRMED /
+FULLY VERIFIED comments in `claude-review-reusable.yml`'s header and the
+`test-review` job's own step comments for the live-run evidence of each.
 
 ### Adding this to a new repo
 
@@ -77,6 +80,6 @@ go red but won't actually block merging. `review` (code quality) should
 stay off required-status-checks; it's advisory by design.
 
 Currently wired up on: `N10AI`, `ImpactEd_AI`, `One_Off_Apparel`,
-`lp-internal-ai-v1`, `elevate215` — for `review` only. `test-review` is new
-and not yet rolled out to any repo — do a live-verified throwaway PR first
-(see the caution above), then add the required-status-check.
+`lp-internal-ai-v1`, `elevate215` — for `review` only. `test-review` is
+verified (see above) but not yet rolled out to any production repo as a
+required status check — that's the next step.

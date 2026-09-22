@@ -35,14 +35,18 @@ name: Claude Review (reusable)
 # sync if you edit either copy. SKILL.md stays in the repo as the
 # documented/readable source; this file is what actually runs.
 #
-#   3. Runs a SEPARATE job, `test-review`, implementing
-#      .claude/skills/automated-test-review/SKILL.md. Unlike `review` above,
-#      this job is a real merge gate: it fetches the OpenProject work
-#      package linked in the PR, judges the diff's tests against that
-#      story's outputs and the org's E2E-first testing ground rules, writes
-#      a verdict artifact, and fails the job (red check) if tests are
-#      missing or inadequate. Keep test-review's prompt in sync with
-#      .claude/skills/automated-test-review/SKILL.md the same way.
+#   3. Runs a SEPARATE job, `test-review`. Unlike `review` above, this job
+#      is a real merge gate: it fetches the OpenProject work package linked
+#      in the PR, judges the diff's tests against that story's outputs and
+#      the org's E2E-first testing ground rules, writes a verdict artifact,
+#      and fails the job (red check) if tests are missing or inadequate.
+#      The ground rules are inlined directly into TEST_REVIEW_PROMPT below
+#      (same reason as CLAUDE_REVIEW_PROMPT above — Skill-tool discovery
+#      only scans the *calling* repo's .claude/skills/, not this repo's,
+#      and this repo is private so a cross-repo checkout has no token to
+#      use). .claude/skills/automated-test-review/SKILL.md stays as the
+#      readable source for local dev use (the test-creation companion
+#      skill references the same rules) — keep both in sync.
 #
 # `test-review` talks to OpenProject via OpenProject's own built-in MCP
 # server (Enterprise add-on, enabled on projects.liftofflearning.tech at
@@ -62,17 +66,34 @@ name: Claude Review (reusable)
 # criteria. TEST_REVIEW_ALLOWED_TOOLS below names those confirmed tools
 # directly instead of a server-level wildcard.
 #
-# CAUTION — one thing that OAuth-based check above does NOT verify: this
-# job authenticates as a personal API token (Bearer), not OAuth — a
-# different auth path than the one just tested. Confirm with
-# show_full_output: true on a throwaway PR that a bearer personal API token
-# actually authenticates against <OPENPROJECT_URL>/mcp before trusting a
-# green run here, the same discipline that caught the two real
-# GitHub-tool-name bugs below. If it needs Basic auth instead (like the
-# classic APIv3) or doesn't accept personal API tokens at all (requiring
-# the OAuth-application path under Administration -> Authentication ->
-# OAuth applications instead), the "Write OpenProject MCP config" step
-# needs updating accordingly.
+# FULLY VERIFIED END-TO-END 2026-09-22 (LaunchPadPhilly/claude-review-ci-test
+# PR #2, run 35768952478): the bearer personal-API-token auth path DOES reach
+# <OPENPROJECT_URL>/mcp and expose the confirmed tool names above. The
+# verdict correctly cited real OpenProject data (work_package_id "476",
+# quoting OP#476's actual acceptance criteria by name) and a COMMENT-type PR
+# review was posted. Getting here took four independent, stacked bugs (see
+# each step's own comments for the live-run evidence of each):
+#   1. TEST_REVIEW_ALLOWED_TOOLS/_DISALLOWED_TOOLS (and CLAUDE_ALLOWED_TOOLS/
+#      _DISALLOWED_TOOLS above) are YAML folded scalars (`>-`), which turn
+#      each comma-then-newline into ", " — every tool name after the first
+#      carried a leading space the matcher never trimmed. Fixed by the
+#      "Normalize tool allowlists" step in both jobs.
+#   2. claude-code-action always auto-injects its own MCP servers (github,
+#      github_inline_comment) as inline-JSON --mcp-config; a *file path*
+#      --mcp-config value gets silently dropped whenever inline JSON is also
+#      present (base-action/src/parse-sdk-options.ts, mergeMcpConfigs) — so
+#      "openproject" never appeared in the init event's mcp_servers list, no
+#      error either. Fixed by emitting our config as inline JSON too (see
+#      "Write OpenProject MCP config" below).
+#   3. The Skill-tool/cross-repo-checkout problem described above — Claude
+#      correctly refused to fabricate a verdict rather than guess the
+#      skill's rules, which is why every prior run failed loudly (good) but
+#      for the wrong, undiagnosed reason (bad) until this was root-caused.
+# Any one of these alone would have looked like "the OpenProject connection
+# doesn't work" — they were diagnosed and fixed one at a time, each
+# confirmed via show_full_output: true and a fresh run, not assumed fixed.
+# If you bump claude-code-action's pinned version or edit this job, re-run
+# the same throwaway-PR discipline rather than trusting a green check.
 #
 # Secrets expected from the caller via `secrets: inherit`:
 #   CLAUDE_CODE_OAUTH_TOKEN — subscription auth, the only auth path.
@@ -436,16 +457,14 @@ jobs:
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           prompt: ${{ env.TEST_REVIEW_PROMPT }}
-          # TEMPORARY debug flag, kept one more run to confirm the inline-JSON
-          # --mcp-config fix (see "Write OpenProject MCP config" above)
-          # actually gets "openproject" into the init event's mcp_servers
-          # list. Remove once confirmed — see this file's header CAUTION.
           # User-approved 2026-09-22: putting the Bearer token inline in
           # claude_args (rather than a file path, which the action silently
-          # drops) is acceptable, relying on GitHub Actions' secret masking
-          # to redact `secrets.OPENPROJECT_API_KEY` wherever it appears in
-          # job logs, including nested in this JSON string.
-          show_full_output: true
+          # drops — see the CONFIRMED comment above) is acceptable, relying
+          # on GitHub Actions' secret masking to redact
+          # `secrets.OPENPROJECT_API_KEY` wherever it appears in job logs,
+          # including nested in this JSON string. Verified live: run
+          # 35768952478 (LaunchPadPhilly/claude-review-ci-test PR #2) shows
+          # the value correctly masked to `***` even embedded in the JSON.
           claude_args: |
             --mcp-config '${{ env.OPENPROJECT_MCP_CONFIG_JSON }}'
             --allowedTools ${{ env.TEST_REVIEW_ALLOWED_TOOLS_CLEAN }}
