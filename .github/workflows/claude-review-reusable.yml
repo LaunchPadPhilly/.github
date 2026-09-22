@@ -264,14 +264,33 @@ jobs:
 
       # OpenProject's own hosted MCP server — a remote HTTP endpoint, so
       # unlike the earlier design there's nothing to check out or pin here.
-      # Written to a file rather than inlined into claude_args so the API
-      # key never appears as a command-line argument (which shells /
-      # process listings / accidental verbose-logging can leak — this repo
-      # already had one scare with a debug flag surfacing more than
-      # intended, see PR #8/#10). GITHUB_TOKEN-style masking covers
-      # `secrets.*` in step *output*, but does not reliably cover every
-      # place a raw command line might get echoed, so avoid the exposure
-      # instead of relying on masking.
+      #
+      # CONFIRMED (live run 35767166118, LaunchPadPhilly/claude-review-ci-test
+      # PR #2): the originally-planned `--mcp-config <file path>` design does
+      # NOT work with anthropics/claude-code-action. The action always
+      # auto-injects its own built-in MCP servers (github,
+      # github_inline_comment, ...) as an *inline JSON* `--mcp-config` value.
+      # Its base-action arg parser (base-action/src/parse-sdk-options.ts,
+      # mergeMcpConfigs) merges multiple `--mcp-config` occurrences by
+      # Object.assign-ing every inline-JSON value's `mcpServers`, but for a
+      # *file path* value it can't read the file at parse time — so whenever
+      # any inline JSON config is also present (which it always is, from the
+      # action's own servers), the file path is silently dropped and only
+      # the action's own servers survive. The init "system" event's
+      # `mcp_servers` list confirmed this directly: only "github" and
+      # "github_inline_comment" ever showed up as connected, never
+      # "openproject" — with no error, just silence. This is why the first
+      # two live runs reported no OpenProject connector at all.
+      #
+      # Fix: emit our server as inline JSON too (via $GITHUB_ENV, single
+      # line, jq -c) so it merges via the same Object.assign path instead of
+      # the broken file-path path. This does put the API key's value inside
+      # a `claude_args` string that gets echoed to the step log, unlike the
+      # file-path approach — but GitHub Actions' secret masking scans *all*
+      # log output for any registered `secrets.*` value, not just the step
+      # that reads it, so `secrets.OPENPROJECT_API_KEY` gets masked wherever
+      # it appears job-wide, including nested in this JSON. Prefer that over
+      # a "safer-looking" design that turned out not to work at all.
       #
       # Auth header UNVERIFIED — see the CAUTION block in this file's
       # header. Update this if OpenProject's MCP endpoint turns out to need
@@ -283,11 +302,15 @@ jobs:
           OPENPROJECT_API_KEY: ${{ secrets.OPENPROJECT_API_KEY }}
         run: |
           set -euo pipefail
-          jq -n \
+          config=$(jq -nc \
             --arg url "${OPENPROJECT_URL%/}/mcp" \
             --arg auth "Bearer ${OPENPROJECT_API_KEY}" \
-            '{mcpServers:{openproject:{type:"http",url:$url,headers:{Authorization:$auth}}}}' \
-            > "$RUNNER_TEMP/openproject-mcp-config.json"
+            '{mcpServers:{openproject:{type:"http",url:$url,headers:{Authorization:$auth}}}}')
+          {
+            echo "OPENPROJECT_MCP_CONFIG_JSON<<__OPENPROJECT_MCP_CONFIG_EOF__"
+            echo "$config"
+            echo "__OPENPROJECT_MCP_CONFIG_EOF__"
+          } >> "$GITHUB_ENV"
 
       # See "Normalize tool allowlists" in the `review` job above for why
       # this step exists: TEST_REVIEW_ALLOWED_TOOLS/_DISALLOWED_TOOLS are
@@ -310,16 +333,18 @@ jobs:
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           prompt: ${{ env.TEST_REVIEW_PROMPT }}
-          # TEMPORARY debug flag: permission_denials_count went UP (11 -> 17)
-          # after the whitespace fix, and no verdict file was written this
-          # time — meaning Claude is now actually attempting the OpenProject
-          # MCP tools for real (not short-circuiting on a name mismatch) but
-          # hitting genuine denials/errors and running out of turns. Need
-          # the real per-call reason (auth 401/403 vs. something else).
-          # Remove once diagnosed — see this file's header CAUTION block.
+          # TEMPORARY debug flag, kept one more run to confirm the inline-JSON
+          # --mcp-config fix (see "Write OpenProject MCP config" above)
+          # actually gets "openproject" into the init event's mcp_servers
+          # list. Remove once confirmed — see this file's header CAUTION.
+          # User-approved 2026-09-22: putting the Bearer token inline in
+          # claude_args (rather than a file path, which the action silently
+          # drops) is acceptable, relying on GitHub Actions' secret masking
+          # to redact `secrets.OPENPROJECT_API_KEY` wherever it appears in
+          # job logs, including nested in this JSON string.
           show_full_output: true
           claude_args: |
-            --mcp-config ${{ runner.temp }}/openproject-mcp-config.json
+            --mcp-config '${{ env.OPENPROJECT_MCP_CONFIG_JSON }}'
             --allowedTools ${{ env.TEST_REVIEW_ALLOWED_TOOLS_CLEAN }}
             --disallowedTools ${{ env.TEST_REVIEW_DISALLOWED_TOOLS_CLEAN }}
 
