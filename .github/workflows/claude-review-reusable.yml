@@ -180,14 +180,29 @@ jobs:
         with:
           fetch-depth: 0
 
+      # CLAUDE_ALLOWED_TOOLS/CLAUDE_DISALLOWED_TOOLS above are YAML folded
+      # scalars (`>-`): each line break folds to a single space, so the
+      # comma-then-newline in the source becomes ", " in the actual string
+      # (e.g. "Read,Grep,Glob, mcp__github__get_pull_request, ..."). That
+      # leading space on every entry after the first is a real bug, not
+      # cosmetic — found live via test-review below (see that job's comment)
+      # where it caused every allowlisted MCP tool call to be silently
+      # permission-denied because the allowlist entries didn't literally
+      # match the requested tool names. Stripping all whitespace here before
+      # it reaches claude_args fixes both jobs.
+      - name: Normalize tool allowlists
+        run: |
+          echo "CLAUDE_ALLOWED_TOOLS_CLEAN=$(echo "$CLAUDE_ALLOWED_TOOLS" | tr -d '[:space:]')" >> "$GITHUB_ENV"
+          echo "CLAUDE_DISALLOWED_TOOLS_CLEAN=$(echo "$CLAUDE_DISALLOWED_TOOLS" | tr -d '[:space:]')" >> "$GITHUB_ENV"
+
       - name: Claude Review (subscription)
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           prompt: ${{ env.CLAUDE_REVIEW_PROMPT }}
           claude_args: |
-            --allowedTools ${{ env.CLAUDE_ALLOWED_TOOLS }}
-            --disallowedTools ${{ env.CLAUDE_DISALLOWED_TOOLS }}
+            --allowedTools ${{ env.CLAUDE_ALLOWED_TOOLS_CLEAN }}
+            --disallowedTools ${{ env.CLAUDE_DISALLOWED_TOOLS_CLEAN }}
 
   # Separate job from `review` above on purpose: `review` (thermo-nuclear
   # code quality) stays advisory/COMMENT-only per 01-design.md's hard-learned
@@ -274,6 +289,22 @@ jobs:
             '{mcpServers:{openproject:{type:"http",url:$url,headers:{Authorization:$auth}}}}' \
             > "$RUNNER_TEMP/openproject-mcp-config.json"
 
+      # See "Normalize tool allowlists" in the `review` job above for why
+      # this step exists: TEST_REVIEW_ALLOWED_TOOLS/_DISALLOWED_TOOLS are
+      # folded YAML scalars, so every entry after the first has a leading
+      # space in the real string. CONFIRMED root cause of the first live
+      # test-review run (LaunchPadPhilly/claude-review-ci-test PR #2,
+      # run 35765864950) reporting "No OpenProject connector or credentials
+      # are available" with permission_denials_count: 11 — exactly the
+      # number of entries in the allowlist. The tool matcher does not trim
+      # whitespace, so " mcp__openproject__search_work_packages" never
+      # matched the requested "mcp__openproject__search_work_packages" and
+      # every allowlisted MCP tool call was denied, not just OpenProject's.
+      - name: Normalize tool allowlists
+        run: |
+          echo "TEST_REVIEW_ALLOWED_TOOLS_CLEAN=$(echo "$TEST_REVIEW_ALLOWED_TOOLS" | tr -d '[:space:]')" >> "$GITHUB_ENV"
+          echo "TEST_REVIEW_DISALLOWED_TOOLS_CLEAN=$(echo "$TEST_REVIEW_DISALLOWED_TOOLS" | tr -d '[:space:]')" >> "$GITHUB_ENV"
+
       - name: Claude Test Review (subscription)
         uses: anthropics/claude-code-action@v1
         with:
@@ -281,8 +312,8 @@ jobs:
           prompt: ${{ env.TEST_REVIEW_PROMPT }}
           claude_args: |
             --mcp-config ${{ runner.temp }}/openproject-mcp-config.json
-            --allowedTools ${{ env.TEST_REVIEW_ALLOWED_TOOLS }}
-            --disallowedTools ${{ env.TEST_REVIEW_DISALLOWED_TOOLS }}
+            --allowedTools ${{ env.TEST_REVIEW_ALLOWED_TOOLS_CLEAN }}
+            --disallowedTools ${{ env.TEST_REVIEW_DISALLOWED_TOOLS_CLEAN }}
 
       - name: Upload test-review verdict artifact
         if: always()
