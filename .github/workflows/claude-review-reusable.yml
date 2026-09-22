@@ -262,6 +262,51 @@ jobs:
         with:
           fetch-depth: 0
 
+      # CONFIRMED (live run 35768127686, LaunchPadPhilly/claude-review-ci-test
+      # PR #2): the "automated-test-review" skill was never actually
+      # reachable. Claude Code only auto-discovers skills from
+      # `.claude/skills/` inside the checked-out working directory (the
+      # *calling* repo, e.g. claude-review-ci-test), but the skill file
+      # lives in this repo (LaunchPadPhilly/.github) and nothing copied it
+      # over — "Checkout PR" above only checks out the calling repo. Claude
+      # correctly refused to fabricate the review rather than guess the
+      # skill's rules (its own words: "I won't fabricate the review process
+      # ... since getting that skill's exact rules wrong is worse than not
+      # running it"), which is the right failure mode but means every prior
+      # run silently never ran the real skill logic at all — the earlier
+      # "no OpenProject connector" and "no verdict file" results were this
+      # bug wearing different masks, layered on top of the two bugs above.
+      #
+      # Fix: explicitly check out this repo's automated-test-review skill
+      # into the calling repo's .claude/skills/ before invoking Claude, at
+      # the same ref this reusable workflow itself was called at (parsed
+      # from github.workflow_ref, e.g. "...@refs/heads/add-automated-test-
+      # review") so a test of a branch's skill changes actually exercises
+      # that branch's skill, not main's.
+      - name: Resolve this workflow's own ref
+        id: workflow-ref
+        env:
+          WORKFLOW_REF: ${{ github.workflow_ref }}
+        run: echo "ref=${WORKFLOW_REF#*@}" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout automated-test-review skill source
+        uses: actions/checkout@v6
+        with:
+          repository: LaunchPadPhilly/.github
+          ref: ${{ steps.workflow-ref.outputs.ref }}
+          sparse-checkout: |
+            .claude/skills/automated-test-review
+          sparse-checkout-cone-mode: false
+          path: .dot-github-skill-src
+
+      - name: Install automated-test-review skill into calling repo
+        run: |
+          set -euo pipefail
+          mkdir -p .claude/skills
+          rm -rf .claude/skills/automated-test-review
+          cp -r .dot-github-skill-src/.claude/skills/automated-test-review .claude/skills/automated-test-review
+          rm -rf .dot-github-skill-src
+
       # OpenProject's own hosted MCP server — a remote HTTP endpoint, so
       # unlike the earlier design there's nothing to check out or pin here.
       #
