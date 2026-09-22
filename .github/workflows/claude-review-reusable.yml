@@ -310,6 +310,14 @@ jobs:
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           prompt: ${{ env.TEST_REVIEW_PROMPT }}
+          # TEMPORARY debug flag: permission_denials_count went UP (11 -> 17)
+          # after the whitespace fix, and no verdict file was written this
+          # time — meaning Claude is now actually attempting the OpenProject
+          # MCP tools for real (not short-circuiting on a name mismatch) but
+          # hitting genuine denials/errors and running out of turns. Need
+          # the real per-call reason (auth 401/403 vs. something else).
+          # Remove once diagnosed — see this file's header CAUTION block.
+          show_full_output: true
           claude_args: |
             --mcp-config ${{ runner.temp }}/openproject-mcp-config.json
             --allowedTools ${{ env.TEST_REVIEW_ALLOWED_TOOLS_CLEAN }}
