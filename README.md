@@ -9,17 +9,35 @@ drifts across repos.
 `.github/workflows/claude-review-reusable.yml` is a `workflow_call`
 target that runs an automatic, review-only Claude pass on every PR in
 a calling repo. It never approves or requests changes — only posts a
-`COMMENT`-type review. The review prompt (thermo-nuclear code quality
-standards) is inlined directly in the workflow file; the readable
-source of that prompt is kept at
-`.claude/skills/thermo-nuclear-code-quality-review/SKILL.md` — keep
-both in sync if you edit the standards. Full design notes are in the
-reusable workflow's header comment.
+`COMMENT`-type review. What the reviewer is told lives in plain files,
+fetched at run time from this (public) repo — edit these, not the
+workflow:
+
+| File | Used by |
+|---|---|
+| `prompts/code-review.md` | `review` job |
+| `prompts/test-review.md` | `test-review` job |
+| `review-rubric/rubric.md` | appended to both prompts |
+
+The skills in `.claude/skills/` are the local-dev counterparts for
+running the same review by hand. Full design notes are in the reusable
+workflow's header comment.
+
+To try prompt changes before merging, point a throwaway PR's caller at
+your branch: `uses: LaunchPadPhilly/.github/.github/workflows/claude-review-reusable.yml@<branch>`
+with `with: { review_ci_ref: <branch> }`.
 
 Bills a Claude Pro/Max subscription (`CLAUDE_CODE_OAUTH_TOKEN`) —
 the only auth path. If that call fails (missing/revoked token, rate
 limit, quota), the job fails and shows red on the PR check, on
 purpose — no silent fallback to metered API billing.
+
+### Severity rubric
+
+Both jobs label findings on one five-tier scale — nitpick / minor / medium /
+major / blocking — defined once in `review-rubric/rubric.md`, with the
+verdict JSON shape in `review-rubric/verdict.schema.json`. Only `major`
+and `blocking` findings are meant to fail a check.
 
 ## Automated Test Review
 
@@ -30,11 +48,8 @@ over mocks, verifiable/repeatable artifacts, no tautological or
 narrowly-pinned regression tests). Unlike Claude Review above, **this one
 is a real merge gate**: it fails the job (red check) when tests are
 missing or inadequate, and uploads a `test-review-verdict` JSON artifact
-either way so the verdict is inspectable, not just a checkmark. The ground
-rules are inlined directly in the workflow file (same reason as the
-`review` job's prompt — see its header comment); the readable source is
-kept at `.claude/skills/automated-test-review/SKILL.md` — keep both in
-sync if you edit the standards.
+either way so the verdict is inspectable, not just a checkmark. Its prompt
+and ground rules are `prompts/test-review.md`.
 
 The companion dev-facing skill, `.claude/skills/test-creation/SKILL.md`,
 writes tests against the same ground rules from an OpenProject work
