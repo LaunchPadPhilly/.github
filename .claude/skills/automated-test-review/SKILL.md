@@ -15,6 +15,10 @@ This is a **merge-blocking** check, run separately from the
 this skill's verdict is `tests_adequate: false`, the calling workflow fails
 the job on purpose.
 
+> **Severity** — label every finding with the shared five-tier rubric in
+> [`review-rubric/rubric.md`](../../../review-rubric/rubric.md) (nitpick / minor /
+> medium / major / blocking). Only `major` and `blocking` fail the check.
+
 ## Step 1 — find the user story
 
 1. Read the PR title/description and commit messages for an OpenProject

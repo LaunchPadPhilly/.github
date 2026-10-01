@@ -8,7 +8,7 @@ name: Claude Review (reusable)
 # What this does, in order:
 #   1. Checks out the calling repo's PR head.
 #   2. Runs Claude Review on the Pro/Max subscription (CLAUDE_CODE_OAUTH_TOKEN)
-#      with the thermo-nuclear-code-quality-review prompt inlined below.
+#      with the prompt in prompts/code-review.md.
 #
 # The review posts only a COMMENT-type PR review — never APPROVE or REQUEST_
 # CHANGES. Merge approval stays a human call; branch protection on each
@@ -29,24 +29,25 @@ name: Claude Review (reusable)
 # for real (grep the run log, don't trust the exit code) rather than
 # re-adding the same shape of complexity.
 #
-# The prompt text below is sourced from this repo's
-# .claude/skills/thermo-nuclear-code-quality-review/SKILL.md — keep that
-# file's "Core Prompt" + "Non-Negotiable Additional Standards" section in
-# sync if you edit either copy. SKILL.md stays in the repo as the
-# documented/readable source; this file is what actually runs.
+# Prompts are plain files in this repo, fetched at run time by each job's
+# "Load prompt" step (this repo is public, so the calling repo's own
+# GITHUB_TOKEN can read it):
+#   prompts/code-review.md     — `review` job
+#   prompts/test-review.md     — `test-review` job
+#   review-rubric/rubric.md    — severity rubric, appended to both prompts
+# Edit those files, not this one, to change what the reviewer is told.
+# The fetch uses `inputs.review_ci_ref` (default main). Until this repo went
+# public, both prompts had to be inlined here as env strings, kept in sync
+# by hand with the SKILL.md copies — the reason for most of the history
+# below. The JSON shape both jobs' verdicts follow is
+# review-rubric/verdict.schema.json.
 #
 #   3. Runs a SEPARATE job, `test-review`. Unlike `review` above, this job
 #      is a real merge gate: it fetches the OpenProject work package linked
 #      in the PR, judges the diff's tests against that story's outputs and
 #      the org's E2E-first testing ground rules, writes a verdict artifact,
 #      and fails the job (red check) if tests are missing or inadequate.
-#      The ground rules are inlined directly into TEST_REVIEW_PROMPT below
-#      (same reason as CLAUDE_REVIEW_PROMPT above — Skill-tool discovery
-#      only scans the *calling* repo's .claude/skills/, not this repo's,
-#      and this repo is private so a cross-repo checkout has no token to
-#      use). .claude/skills/automated-test-review/SKILL.md stays as the
-#      readable source for local dev use (the test-creation companion
-#      skill references the same rules) — keep both in sync.
+#      Its prompt is prompts/test-review.md.
 #
 # `test-review` talks to OpenProject via OpenProject's own built-in MCP
 # server (Enterprise add-on, enabled on projects.liftofflearning.tech at
@@ -119,7 +120,16 @@ name: Claude Review (reusable)
 # check — don't just guess from the tool name shape.
 
 on:
-  workflow_call: {}
+  workflow_call:
+    inputs:
+      review_ci_ref:
+        description: >-
+          Ref of LaunchPadPhilly/.github to load prompts/ and review-rubric/
+          from. Leave as main; set it to a branch name alongside
+          `uses: ...@<branch>` to try prompt changes on a throwaway PR
+          before merging them.
+        type: string
+        default: main
 
 jobs:
   review:
@@ -135,54 +145,6 @@ jobs:
       # job request an OIDC token if the action asks for one.
       id-token: write
     env:
-      CLAUDE_REVIEW_PROMPT: |
-        REPO: ${{ github.repository }}
-        PR NUMBER: ${{ github.event.pull_request.number }}
-
-        Perform a deep code quality audit of this PR's diff versus its base
-        branch, focused on implementation quality, maintainability,
-        abstraction quality, and codebase health. Rethink how to structure
-        the changes to meaningfully improve code quality without impacting
-        behavior. Work to improve abstractions and modularity, reduce
-        spaghetti code, and improve succinctness and legibility. Be
-        ambitious: if there is a clear path to a dramatically simpler
-        restructuring ("code judo" — a reorganization that uses the
-        existing architecture more effectively and deletes whole branches,
-        helpers, or layers rather than just rearranging them), push hard
-        for it rather than settling for local cleanup. Be extremely
-        thorough and rigorous. Measure twice, cut once.
-
-        Apply these standards:
-        - Flag a file crossing from under 1000 lines to over 1000 lines
-          without a strong reason; prefer decomposition first.
-        - Flag ad-hoc conditionals, scattered special cases, or one-off
-          branches bolted onto existing flows; prefer a dedicated
-          abstraction, helper, or module instead.
-        - Bias toward the cleaner design over rubber-stamping "it works";
-          prefer simplifications that remove moving pieces over refactors
-          that just spread the same complexity around.
-        - Prefer direct, boring, maintainable code over hacky or magical
-          mechanisms; flag thin/identity wrappers that add indirection
-          without clarity.
-        - Push on type and boundary cleanliness: question unnecessary
-          optionality, `unknown`/`any`, or cast-heavy code; prefer explicit
-          typed models over ad-hoc shapes.
-        - Flag feature logic leaking into shared/canonical paths; prefer
-          existing canonical helpers over bespoke one-offs.
-        - Flag unnecessary sequential orchestration or non-atomic updates
-          when a more parallel or atomic structure is clearly better.
-
-        Prioritize findings in this order: structural regressions, missed
-        dramatic-simplification opportunities, spaghetti/branching growth,
-        boundary/type problems, file-size/decomposition, modularity, then
-        legibility. Prefer a small number of high-conviction comments over
-        a long list of cosmetic nits. Do not soften major maintainability
-        issues into mild suggestions, but stay direct rather than rude.
-
-        Post your findings as a single PR review with event type COMMENT.
-        Do NOT approve this PR and do NOT request changes as a formal review
-        state — this review is advisory only. A human reviewer is the merge
-        gate, not you.
       CLAUDE_ALLOWED_TOOLS: >-
         Read,Grep,Glob,
         mcp__github__get_pull_request,
@@ -200,6 +162,29 @@ jobs:
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
+
+      - name: Load prompt
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REF: ${{ inputs.review_ci_ref }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          shopt -s inherit_errexit  # so a failed fetch inside $(...) fails the step
+          fetch() {
+            gh api -H 'Accept: application/vnd.github.raw' \
+              "repos/LaunchPadPhilly/.github/contents/$1?ref=$REF"
+            echo
+          }
+          # Build the whole prompt before touching $GITHUB_ENV, so a failed
+          # fetch fails this step instead of leaving a half-written value.
+          prompt=$(
+            printf 'REPO: %s\nPR NUMBER: %s\n\n' "$REPO" "$PR_NUMBER"
+            fetch prompts/code-review.md
+            fetch review-rubric/rubric.md
+          )
+          printf 'CLAUDE_REVIEW_PROMPT<<__REVIEW_PROMPT_EOF__\n%s\n__REVIEW_PROMPT_EOF__\n' "$prompt" >> "$GITHUB_ENV"
 
       # CLAUDE_ALLOWED_TOOLS/CLAUDE_DISALLOWED_TOOLS above are YAML folded
       # scalars (`>-`): each line break folds to a single space, so the
@@ -238,126 +223,12 @@ jobs:
       pull-requests: write
       id-token: write
     env:
-      # CONFIRMED (live run 35768453106): invoking this as a *Skill* tool
-      # call doesn't work in CI the way it does for a human editing this
-      # repo. Skill discovery only scans .claude/skills/ inside the checked-
-      # out working directory, which for a workflow_call job is the
-      # *calling* repo (e.g. claude-review-ci-test), not this repo
-      # (LaunchPadPhilly/.github) where automated-test-review/SKILL.md
-      # actually lives. A prior attempt to fix that by cross-repo checking
-      # out this repo's skill folder failed too: LaunchPadPhilly/.github is
-      # private, and the calling repo's default GITHUB_TOKEN has no
-      # cross-repo read access to it (no PAT/App token exists for this,
-      # unlike whatever mechanism was already solved for the `review` job
-      # above). Both attempts left Claude correctly refusing to fabricate a
-      # verdict rather than guess the rules — the right failure mode, but it
-      # means the skill's real judgment logic had never actually run before
-      # this fix.
+      # The prompt is fetched at run time by the "Load prompt" step below —
+      # see this file's header. (History: invoking automated-test-review as
+      # a *Skill* failed live in run 35768453106 because Skill discovery
+      # only scans the calling repo's .claude/skills/, and a cross-repo
+      # checkout of this repo failed while it was private.)
       #
-      # Fix: match the `review` job's own established pattern exactly
-      # (CLAUDE_REVIEW_PROMPT above) — inline the ground rules directly into
-      # the prompt instead of relying on runtime Skill discovery. The
-      # .claude/skills/automated-test-review/SKILL.md file stays as the
-      # readable, authoritative source; keep both in sync if you edit the
-      # standards, same discipline the review job's comment already asks for.
-      TEST_REVIEW_PROMPT: |
-        REPO: ${{ github.repository }}
-        PR NUMBER: ${{ github.event.pull_request.number }}
-
-        Judge whether this PR's automated tests are adequate proof that the
-        linked OpenProject user story actually works — not whether *some*
-        test exists. A PR can have 100% green CI and still fail this review.
-        This is a merge-blocking check: if your verdict is
-        `tests_adequate: false`, the job step below fails the job on
-        purpose.
-
-        Step 1 — find the user story:
-        1. Read the PR title/description and commit messages for an
-           OpenProject work package reference (e.g. OP#1234, op:1234, a
-           work-package URL).
-        2. If none is found: fail immediately. tests_adequate: false,
-           reasons: ["no OpenProject work package linked to this PR"]. Do
-           not attempt to infer intent from the diff alone.
-        3. If found, fetch the work package with
-           mcp__openproject__search_work_packages (filter by id). Its
-           description.raw field is markdown — read it, and pull any
-           comments via mcp__openproject__list_work_package_comments if
-           acceptance criteria were refined there instead of in the
-           description, for the concrete, observable outputs the story
-           commits to (user-visible behavior, not implementation detail).
-        4. If the work package has no discernible acceptance criteria /
-           expected outputs (just a title), fail: reasons: ["OP#<id> has no
-           acceptance criteria to test against"]. Do not guess what "done"
-           means.
-
-        Step 2 — check what the diff actually added: read the PR diff via
-        mcp__github__get_pull_request_diff / get_pull_request_files. For
-        each output the user story commits to, find the test (if any) that
-        exercises it, then judge it against the ground rules below. A
-        missing test for a committed output is treated the same as an
-        inadequate one.
-
-        Ground rules for "proper automated tests" — these are the bar, not
-        suggestions; cite the specific rule a test fails when flagging it:
-        1. E2E-first. For any feature with real complexity, an end-to-end
-           test exercising the real path (not mocks) is the primary
-           evidence, not a supplement to unit tests. Don't accept a
-           mocked-unit-test suite in place of an E2E test when the real
-           path (real DB, real API, real service boundary) could have been
-           exercised instead.
-        2. E2E tests must have variance, not the easy path. A test that
-           only proves the happy path with the simplest possible input does
-           not meet the bar. Look for realistic complexity: multiple
-           records, edge-of-range values, a second actor/tenant, a state
-           transition, something that would actually catch a subtly wrong
-           implementation.
-        3. E2E tests must produce a verifiable, repeatable artifact.
-           Artifact: something a human or CI step can inspect after the run
-           independent of the pass/fail signal — a diffable state snapshot,
-           a structured JSON report, or a trace/log uploaded by CI. "The
-           assertions passed" is not an artifact. Repeatable: deterministic
-           given the same starting state, doesn't depend on execution order
-           or leftover state, safe to re-run without manual cleanup. A test
-           missing either property fails this rule even if well-targeted.
-        4. No tautological / change-detector tests. A test that can only
-           fail if someone deliberately breaks it, or that fails on any
-           implementation change regardless of whether behavior changed,
-           does not count as coverage. Flag and disregard these even if
-           present.
-        5. Regression tests need genuine new coverage, not a pinned repro.
-           Check whether a regression test widens coverage of the actual
-           class of input/state that was untested, not just the exact
-           reported input/code path. If it's just the bug report turned
-           into an assertion, treat the underlying gap as still open.
-        6. Combine trivial tests. Several near-identical trivial-assertion
-           tests that could be one parameterized/table test are a smell —
-           call it out but don't fail the PR for this alone unless it's
-           masking rules 1–5 (e.g. ten trivial unit tests standing in for
-           the one E2E test actually needed).
-
-        Step 3 — verdict: write a JSON verdict file to
-        .test-review-verdict.json at the repo root (the calling workflow
-        uploads this as a build artifact and greps it for the pass/fail
-        decision — this file IS the artifact for this review, get the
-        schema right):
-        {
-          "work_package_id": "1234",
-          "tests_adequate": false,
-          "outputs_checked": [
-            {"output": "user can export their timesheet as CSV", "test": "none found", "verdict": "missing"},
-            {"output": "export excludes voided entries", "test": "spec/timesheet_export_spec.rb:44", "verdict": "adequate"}
-          ],
-          "reasons": [
-            "no test exercises the CSV export path end-to-end; only a mocked unit test on the formatter exists (rule 1)",
-            "the existing formatter test always uses a single well-formed row — no variance (rule 2)"
-          ]
-        }
-        tests_adequate is false if any committed output has a missing or
-        inadequate test. Then post a single PR review, event type COMMENT
-        (this job step failing is the actual gate, not a formal GitHub
-        review state), summarizing the verdict file in human-readable form,
-        quoting the specific rule each gap violates. Do NOT approve or
-        request changes as a formal review state.
       # openproject tool names below are confirmed real (see this file's
       # header) — server key "openproject" is our own choice, matching the
       # key used in the "Write OpenProject MCP config" step. search_work_packages
@@ -385,6 +256,29 @@ jobs:
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
+
+      - name: Load prompt
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REF: ${{ inputs.review_ci_ref }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          shopt -s inherit_errexit  # so a failed fetch inside $(...) fails the step
+          fetch() {
+            gh api -H 'Accept: application/vnd.github.raw' \
+              "repos/LaunchPadPhilly/.github/contents/$1?ref=$REF"
+            echo
+          }
+          # Build the whole prompt before touching $GITHUB_ENV, so a failed
+          # fetch fails this step instead of leaving a half-written value.
+          prompt=$(
+            printf 'REPO: %s\nPR NUMBER: %s\n\n' "$REPO" "$PR_NUMBER"
+            fetch prompts/test-review.md
+            fetch review-rubric/rubric.md
+          )
+          printf 'TEST_REVIEW_PROMPT<<__REVIEW_PROMPT_EOF__\n%s\n__REVIEW_PROMPT_EOF__\n' "$prompt" >> "$GITHUB_ENV"
 
       # OpenProject's own hosted MCP server — a remote HTTP endpoint, so
       # unlike the earlier design there's nothing to check out or pin here.
@@ -476,6 +370,11 @@ jobs:
         with:
           name: test-review-verdict
           path: .test-review-verdict.json
+          # upload-artifact v4.4+ skips dotfiles by default, which silently
+          # dropped this artifact on every run (claude-review-ci-test PR #1,
+          # run 36887607873: "No files were found" while the enforce step
+          # below read the same file fine).
+          include-hidden-files: true
           if-no-files-found: warn
 
       - name: Enforce test-adequacy verdict

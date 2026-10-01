@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/LaunchPadPhilly/.github/review-rubric/verdict.schema.json",
+  "title": "Review CI verdict",
+  "description": "Written by both the code-review and test-review jobs. The pass/fail decision is derived from findings[].severity by the workflow, never supplied by the model.",
+  "type": "object",
+  "required": ["schema_version", "job", "findings", "summary"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "const": 1 },
+    "job": { "enum": ["code-review", "test-review"] },
+    "work_package_id": {
+      "description": "OpenProject work package the PR is linked to, if any.",
+      "type": ["string", "null"]
+    },
+    "summary": {
+      "description": "Two or three sentences a human can read without opening the findings.",
+      "type": "string"
+    },
+    "findings": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/finding" }
+    }
+  },
+  "$defs": {
+    "severity": { "enum": ["nitpick", "minor", "medium", "major", "blocking"] },
+    "finding": {
+      "type": "object",
+      "required": ["id", "severity", "initial_severity", "title", "claim", "evidence", "file", "line", "confidence"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "description": "Stable within one verdict, e.g. \"F1\".",
+          "type": "string"
+        },
+        "severity": {
+          "description": "Final tier, after the self-challenge pass.",
+          "$ref": "#/$defs/severity"
+        },
+        "initial_severity": {
+          "description": "Tier first assigned, before the self-challenge pass. Differs from severity when the finding was re-graded.",
+          "$ref": "#/$defs/severity"
+        },
+        "title": {
+          "description": "One line, shown in the summary table.",
+          "type": "string"
+        },
+        "claim": {
+          "description": "What is wrong and what merging it as-is would cause.",
+          "type": "string"
+        },
+        "evidence": {
+          "description": "What in the code supports the claim: the triggering input or state, the missing test, the quoted line.",
+          "type": "string"
+        },
+        "file": {
+          "description": "Repo-relative path, or null for a finding with no single location (e.g. an acceptance criterion with no test anywhere).",
+          "type": ["string", "null"]
+        },
+        "line": {
+          "type": ["integer", "null"],
+          "minimum": 1
+        },
+        "confidence": { "enum": ["low", "medium", "high"] },
+        "criterion": {
+          "description": "test-review only: the acceptance criterion this finding concerns, quoted from the work package.",
+          "type": "string"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "severity": { "enum": ["major", "blocking"] } }
+          },
+          "then": {
+            "properties": { "confidence": { "enum": ["medium", "high"] } }
+          }
+        }
+      ]
+    }
+  }
+}
