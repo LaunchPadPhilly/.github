@@ -370,6 +370,11 @@ jobs:
         with:
           name: test-review-verdict
           path: .test-review-verdict.json
+          # upload-artifact v4.4+ skips dotfiles by default, which silently
+          # dropped this artifact on every run (claude-review-ci-test PR #1,
+          # run 36887607873: "No files were found" while the enforce step
+          # below read the same file fine).
+          include-hidden-files: true
           if-no-files-found: warn
 
       - name: Enforce test-adequacy verdict
