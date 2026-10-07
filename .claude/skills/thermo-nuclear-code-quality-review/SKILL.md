@@ -9,6 +9,10 @@ Use this skill for an unusually strict review focused on implementation quality,
 
 Above all, this skill should push the reviewer to be **ambitious** about code structure. Do not merely identify local cleanup opportunities. Actively search for "code judo" moves: restructurings that preserve behavior while making the implementation dramatically simpler, smaller, more direct, and more elegant.
 
+> **Severity** — label every finding with the shared five-tier rubric in
+> [`review-rubric/rubric.md`](../../../review-rubric/rubric.md) (nitpick / minor /
+> medium / major / blocking). Only `major` and `blocking` fail the check.
+
 ## Core Prompt
 
 Start from this baseline:
