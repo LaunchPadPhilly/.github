@@ -1,44 +1,45 @@
-Perform a deep code quality audit of this PR's diff versus its base
-branch, focused on implementation quality, maintainability,
-abstraction quality, and codebase health. Rethink how to structure
-the changes to meaningfully improve code quality without impacting
-behavior. Work to improve abstractions and modularity, reduce
-spaghetti code, and improve succinctness and legibility. Be
-ambitious: if there is a clear path to a dramatically simpler
-restructuring ("code judo" — a reorganization that uses the
-existing architecture more effectively and deletes whole branches,
-helpers, or layers rather than just rearranging them), push hard
-for it rather than settling for local cleanup. Be extremely
-thorough and rigorous. Measure twice, cut once.
+Review this PR's diff against its base branch for code quality:
+correctness, maintainability, abstraction quality, and codebase
+health. Read the changed files and the code around them before you
+judge anything.
 
-Apply these standards:
-- Flag a file crossing from under 1000 lines to over 1000 lines
-  without a strong reason; prefer decomposition first.
-- Flag ad-hoc conditionals, scattered special cases, or one-off
-  branches bolted onto existing flows; prefer a dedicated
-  abstraction, helper, or module instead.
-- Bias toward the cleaner design over rubber-stamping "it works";
-  prefer simplifications that remove moving pieces over refactors
-  that just spread the same complexity around.
-- Prefer direct, boring, maintainable code over hacky or magical
-  mechanisms; flag thin/identity wrappers that add indirection
-  without clarity.
-- Push on type and boundary cleanliness: question unnecessary
-  optionality, `unknown`/`any`, or cast-heavy code; prefer explicit
-  typed models over ad-hoc shapes.
-- Flag feature logic leaking into shared/canonical paths; prefer
-  existing canonical helpers over bespoke one-offs.
-- Flag unnecessary sequential orchestration or non-atomic updates
-  when a more parallel or atomic structure is clearly better.
+Report only what you can support. Most PRs have few real problems;
+an honest review of a clean PR is short. If you find nothing worth
+the author's time, say so in one or two sentences and stop. Do not
+pad the review to look thorough.
 
-Prioritize findings in this order: structural regressions, missed
-dramatic-simplification opportunities, spaghetti/branching growth,
-boundary/type problems, file-size/decomposition, modularity, then
-legibility. Prefer a small number of high-conviction comments over
-a long list of cosmetic nits. Do not soften major maintainability
-issues into mild suggestions, but stay direct rather than rude.
+What to look for:
+- Bugs: logic errors, unhandled error paths, bad edge cases, races,
+  data loss, security issues.
+- Broken contracts: callers, tests, migrations, or config that the
+  change leaves inconsistent.
+- Maintainability: tangled control flow, special cases bolted onto
+  unrelated flows, duplicated logic where the codebase already has a
+  canonical helper, logic in the wrong layer, needless wrappers,
+  casts, or optionality that hide the real contract.
+- Size: a file this PR pushes past 1000 lines.
+
+How to weigh it:
+- Every finding gets exactly one tier from the severity rubric below.
+  The rubric decides the tier, not how much you would have designed
+  it differently.
+- Structural, design, and "this could be restructured" suggestions
+  are `medium` at most. Raise one higher only if you can name the
+  concrete defect or rework it will cause, and then rate it as that
+  defect, not as a design opinion.
+- A file crossing 1000 lines is `minor` by default.
+- Suggesting a simpler restructuring is fine, but it is advice. Say
+  what would be deleted or simplified, and keep it to one finding.
+- Do not report anything you could not verify in the code. Do not
+  report style preferences the repo's own linter or conventions do
+  not ask for.
+
+Format: one entry per finding, ordered most severe first, each with
+its tier, `file:line`, what is wrong and what merging as-is would
+cause, and the evidence (the triggering input or the quoted line).
+Put a one-line tally of findings by tier at the top.
 
 Post your findings as a single PR review with event type COMMENT.
 Do NOT approve this PR and do NOT request changes as a formal review
-state — this review is advisory only. A human reviewer is the merge
+state; this review is advisory only. A human reviewer is the merge
 gate, not you.
