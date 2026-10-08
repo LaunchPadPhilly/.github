@@ -133,6 +133,9 @@ on:
 
 jobs:
   review:
+    # Dependabot PRs are not reviewed: they run with the Dependabot secret
+    # store, which has no CLAUDE_CODE_OAUTH_TOKEN, so the job could only fail.
+    if: github.event.pull_request.user.login != 'dependabot[bot]'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -217,6 +220,9 @@ jobs:
   # check rather than a comment a human can skim past. See the CAUTION note
   # in this file's header before wiring OPENPROJECT_API_KEY into any repo.
   test-review:
+    # Dependabot PRs are not reviewed: they run with the Dependabot secret
+    # store, which has no CLAUDE_CODE_OAUTH_TOKEN, so the job could only fail.
+    if: github.event.pull_request.user.login != 'dependabot[bot]'
     runs-on: ubuntu-latest
     permissions:
       contents: read
