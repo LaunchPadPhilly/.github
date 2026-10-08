@@ -1,94 +1,109 @@
 Judge whether this PR's automated tests are adequate proof that the
-linked OpenProject user story actually works — not whether *some*
-test exists. A PR can have 100% green CI and still fail this review.
-This is a merge-blocking check: if your verdict is
-`tests_adequate: false`, the job step below fails the job on
-purpose.
+linked OpenProject user story works. Grade each acceptance criterion
+on the severity rubric below. This is not a yes/no check and not a
+hunt for gaps: a criterion that is properly tested produces no
+finding, and a PR with nothing worth reporting gets a short review
+saying so.
 
 Step 1 — find the user story:
 1. Read the PR title/description and commit messages for an
    OpenProject work package reference (e.g. OP#1234, op:1234, a
    work-package URL).
-2. If none is found: fail immediately. tests_adequate: false,
-   reasons: ["no OpenProject work package linked to this PR"]. Do
-   not attempt to infer intent from the diff alone.
+2. If none is found, do not infer intent from the diff. Read the
+   repo's CLAUDE.md (and AGENTS.md if present). Only if it requires
+   every change to trace to a work package, report one `blocking`
+   finding: no work package is linked. Otherwise report no findings
+   and say in the summary that there is no linked work package, so
+   nothing was graded.
 3. If found, fetch the work package with
    mcp__openproject__search_work_packages (filter by id). Its
-   description.raw field is markdown — read it, and pull any
-   comments via mcp__openproject__list_work_package_comments if
-   acceptance criteria were refined there instead of in the
-   description, for the concrete, observable outputs the story
-   commits to (user-visible behavior, not implementation detail).
-4. If the work package has no discernible acceptance criteria /
-   expected outputs (just a title), fail: reasons: ["OP#<id> has no
-   acceptance criteria to test against"]. Do not guess what "done"
-   means.
+   description.raw field is markdown. Read it, and pull any comments
+   via mcp__openproject__list_work_package_comments if acceptance
+   criteria were refined there. The criteria are the concrete,
+   observable outputs the story commits to (user-visible behavior,
+   not implementation detail).
+4. If the work package has no discernible acceptance criteria, report
+   one `medium` finding asking for them and grade nothing. Do not
+   guess what "done" means.
+5. If the story is plainly unrelated to what the diff changes (for
+   example a work package mentioned in passing), report one `minor`
+   finding that the link looks wrong and grade nothing.
 
-Step 2 — check what the diff actually added: read the PR diff via
-mcp__github__get_pull_request_diff / get_pull_request_files. For
-each output the user story commits to, find the test (if any) that
-exercises it, then judge it against the ground rules below. A
-missing test for a committed output is treated the same as an
-inadequate one.
+Step 2 — find the tests for each criterion. Read the PR diff via
+mcp__github__get_pull_request_diff / get_pull_request_files, then
+search the whole checked-out repository (Grep and Glob over the test
+directories and any e2e or integration suites), not just the diff. A
+test that already exists elsewhere counts. Before you report a
+criterion as untested, say which paths and terms you searched.
 
-Ground rules for "proper automated tests" — these are the bar, not
-suggestions; cite the specific rule a test fails when flagging it:
-1. E2E-first. For any feature with real complexity, an end-to-end
-   test exercising the real path (not mocks) is the primary
-   evidence, not a supplement to unit tests. Don't accept a
-   mocked-unit-test suite in place of an E2E test when the real
-   path (real DB, real API, real service boundary) could have been
-   exercised instead.
-2. E2E tests must have variance, not the easy path. A test that
-   only proves the happy path with the simplest possible input does
-   not meet the bar. Look for realistic complexity: multiple
-   records, edge-of-range values, a second actor/tenant, a state
-   transition, something that would actually catch a subtly wrong
-   implementation.
-3. E2E tests must produce a verifiable, repeatable artifact.
-   Artifact: something a human or CI step can inspect after the run
-   independent of the pass/fail signal — a diffable state snapshot,
-   a structured JSON report, or a trace/log uploaded by CI. "The
-   assertions passed" is not an artifact. Repeatable: deterministic
-   given the same starting state, doesn't depend on execution order
-   or leftover state, safe to re-run without manual cleanup. A test
-   missing either property fails this rule even if well-targeted.
-4. No tautological / change-detector tests. A test that can only
-   fail if someone deliberately breaks it, or that fails on any
-   implementation change regardless of whether behavior changed,
-   does not count as coverage. Flag and disregard these even if
-   present.
-5. Regression tests need genuine new coverage, not a pinned repro.
-   Check whether a regression test widens coverage of the actual
-   class of input/state that was untested, not just the exact
-   reported input/code path. If it's just the bug report turned
-   into an assertion, treat the underlying gap as still open.
-6. Combine trivial tests. Several near-identical trivial-assertion
-   tests that could be one parameterized/table test are a smell —
-   call it out but don't fail the PR for this alone unless it's
-   masking rules 1–5 (e.g. ten trivial unit tests standing in for
-   the one E2E test actually needed).
+Step 3 — judge each test against the ground rules below, in
+proportion to the risk of the criterion. A criterion that touches
+money, data integrity, auth, or a deploy deserves a stricter reading
+than a label or a layout.
 
-Step 3 — verdict: write a JSON verdict file to
-.test-review-verdict.json at the repo root (the calling workflow
-uploads this as a build artifact and greps it for the pass/fail
-decision — this file IS the artifact for this review, get the
-schema right):
+Ground rules for "proper automated tests", and the tier a violation
+normally earns:
+1. E2E-first. For a feature with real complexity, an end-to-end test
+   on the real path (real DB, API, or service boundary) is the
+   primary evidence. A criterion whose only test mocks the boundary
+   the criterion is about is `major`. For simple or pure logic, a
+   unit test is fine and earns no finding.
+2. Variance. A test that only proves the happy path on the simplest
+   input is `medium` when the criterion is risky and `minor`
+   otherwise.
+3. Artifact and repeatability. A missing inspectable artifact
+   (snapshot, report, uploaded trace) is `minor`, or `medium` for a
+   risky criterion. A test that is order-dependent or leaves state
+   behind is `medium`.
+4. No tautological or change-detector tests. Disregard them as
+   evidence. If one is the only test for a criterion, that criterion
+   is `major` (materially unverified).
+5. A regression test that only re-runs the reported input is `medium`
+   when the class of input is still untested.
+6. Near-identical trivial tests that should be one table test are
+   `nitpick`, or `minor` if they stand in for a test that is needed.
+
+A criterion with no working test anywhere is `blocking`, as the
+rubric says. Do not raise a tier because there are many gaps; report
+the pattern once.
+
+Step 4 — verdict: write a JSON verdict file to
+.test-review-verdict.json at the repo root. The calling workflow
+uploads it as a build artifact and derives pass/fail from it, so get
+the shape exactly right. It must validate against this schema (the
+rubric below describes the fields), with `job` set to "test-review":
+
 {
+  "schema_version": 1,
+  "job": "test-review",
   "work_package_id": "1234",
-  "tests_adequate": false,
-  "outputs_checked": [
-    {"output": "user can export their timesheet as CSV", "test": "none found", "verdict": "missing"},
-    {"output": "export excludes voided entries", "test": "spec/timesheet_export_spec.rb:44", "verdict": "adequate"}
-  ],
-  "reasons": [
-    "no test exercises the CSV export path end-to-end; only a mocked unit test on the formatter exists (rule 1)",
-    "the existing formatter test always uses a single well-formed row — no variance (rule 2)"
+  "summary": "Two of three criteria are tested; the quoting criterion has no test.",
+  "findings": [
+    {
+      "id": "F1",
+      "severity": "blocking",
+      "initial_severity": "blocking",
+      "title": "Comma quoting has no test",
+      "criterion": "Subjects containing a comma are quoted",
+      "claim": "No test exercises quoting, so the CSV could break on ordinary data.",
+      "evidence": "Searched tests/ and e2e/ for 'quote', 'comma', 'escape'; the only export test is tests/test_export.py:4 with plain subjects.",
+      "file": null,
+      "line": null,
+      "confidence": "high"
+    }
   ]
 }
-tests_adequate is false if any committed output has a missing or
-inadequate test. Then post a single PR review, event type COMMENT
-(this job step failing is the actual gate, not a formal GitHub
-review state), summarizing the verdict file in human-readable form,
-quoting the specific rule each gap violates. Do NOT approve or
-request changes as a formal review state.
+
+Criteria that are adequately tested are not findings; mention them in
+`summary`. Set `initial_severity` equal to `severity`. `file` and
+`line` are null for a criterion that has no test anywhere. Use
+`confidence: low` rather than inflating a finding you cannot back up;
+a low-confidence finding cannot be major or blocking. The workflow
+fails the job only if the file is missing or invalid, or if it holds
+a `major` or `blocking` finding. You do not decide pass or fail.
+
+Then post a single PR review, event type COMMENT, summarizing the
+verdict for a human: a one-line tally by tier, the criteria that are
+covered, then each finding with its tier, the criterion it concerns,
+and the evidence. Do NOT approve or request changes as a formal
+review state.

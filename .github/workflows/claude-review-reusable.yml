@@ -383,17 +383,25 @@ jobs:
           include-hidden-files: true
           if-no-files-found: warn
 
-      - name: Enforce test-adequacy verdict
+      # The verdict follows review-rubric/verdict.schema.json. This step only
+      # derives pass/fail from it; the model never supplies a pass flag.
+      # OP#531 will move this into one script shared with the code review.
+      - name: Enforce test-review verdict
         run: |
           set -euo pipefail
           if [ ! -f .test-review-verdict.json ]; then
             echo "::error::automated-test-review produced no verdict file — treating as failed (no evidence tests were checked)."
             exit 1
           fi
-          adequate=$(jq -r '.tests_adequate' .test-review-verdict.json)
           echo "--- test-review verdict ---"
           jq . .test-review-verdict.json
-          if [ "$adequate" != "true" ]; then
-            echo "::error::tests_adequate=false — see the verdict artifact and the PR review comment for what's missing."
+          if ! jq -e '.schema_version == 1 and .job == "test-review" and (.findings | type == "array")' \
+              .test-review-verdict.json >/dev/null; then
+            echo "::error::verdict file does not match review-rubric/verdict.schema.json — treating as failed."
+            exit 1
+          fi
+          gating=$(jq '[.findings[] | select(.severity == "major" or .severity == "blocking")] | length' .test-review-verdict.json)
+          if [ "$gating" -gt 0 ]; then
+            echo "::error::$gating major/blocking test-review finding(s) — see the verdict artifact and the PR review."
             exit 1
           fi
