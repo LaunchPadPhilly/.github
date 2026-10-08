@@ -12,7 +12,10 @@ name: Claude Review (reusable)
 #
 # The review posts only a COMMENT-type PR review — never APPROVE or REQUEST_
 # CHANGES. Merge approval stays a human call; branch protection on each
-# calling repo is the structural backstop, not this workflow.
+# calling repo is the structural backstop, not this workflow. The check
+# itself goes red only if the verdict file holds a major or blocking
+# finding (review-rubric/enforce-verdict.sh); everything below that is
+# advice.
 #
 # If the subscription call fails (missing/revoked token, rate limit, quota
 # exhaustion), this job fails and shows red on the PR check — on purpose.
@@ -42,11 +45,11 @@ name: Claude Review (reusable)
 # below. The JSON shape both jobs' verdicts follow is
 # review-rubric/verdict.schema.json.
 #
-#   3. Runs a SEPARATE job, `test-review`. Unlike `review` above, this job
-#      is a real merge gate: it fetches the OpenProject work package linked
+#   3. Runs a SEPARATE job, `test-review`. It gates the same way as `review`
+#      (major/blocking only). It fetches the OpenProject work package linked
 #      in the PR, judges the diff's tests against that story's outputs and
 #      the org's E2E-first testing ground rules, writes a verdict artifact,
-#      and fails the job (red check) if tests are missing or inadequate.
+#      and fails the job (red check) on a major or blocking finding.
 #      Its prompt is prompts/test-review.md.
 #
 # `test-review` talks to OpenProject via OpenProject's own built-in MCP
@@ -149,7 +152,7 @@ jobs:
       id-token: write
     env:
       CLAUDE_ALLOWED_TOOLS: >-
-        Read,Grep,Glob,
+        Read,Grep,Glob,Write,
         mcp__github__get_pull_request,
         mcp__github__get_pull_request_diff,
         mcp__github__get_pull_request_files,
@@ -212,6 +215,31 @@ jobs:
           claude_args: |
             --allowedTools ${{ env.CLAUDE_ALLOWED_TOOLS_CLEAN }}
             --disallowedTools ${{ env.CLAUDE_DISALLOWED_TOOLS_CLEAN }}
+
+      - name: Upload code-review verdict artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: code-review-verdict
+          path: .code-review-verdict.json
+          include-hidden-files: true
+          if-no-files-found: warn
+
+      # Pass/fail comes from the verdict file, never from the model. Only
+      # major and blocking findings fail the job; see
+      # review-rubric/enforce-verdict.sh.
+      - name: Enforce code-review verdict
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REF: ${{ inputs.review_ci_ref }}
+        run: |
+          set -euo pipefail
+          dir=$(mktemp -d)
+          for f in enforce-verdict.sh verdict.schema.json; do
+            gh api -H 'Accept: application/vnd.github.raw' \
+              "repos/LaunchPadPhilly/.github/contents/review-rubric/$f?ref=$REF" > "$dir/$f"
+          done
+          bash "$dir/enforce-verdict.sh" code-review .code-review-verdict.json
 
   # Separate job from `review` above on purpose: `review` (thermo-nuclear
   # code quality) stays advisory/COMMENT-only per 01-design.md's hard-learned
@@ -383,25 +411,18 @@ jobs:
           include-hidden-files: true
           if-no-files-found: warn
 
-      # The verdict follows review-rubric/verdict.schema.json. This step only
-      # derives pass/fail from it; the model never supplies a pass flag.
-      # OP#531 will move this into one script shared with the code review.
+      # Pass/fail comes from the verdict file, never from the model. Only
+      # major and blocking findings fail the job; see
+      # review-rubric/enforce-verdict.sh.
       - name: Enforce test-review verdict
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REF: ${{ inputs.review_ci_ref }}
         run: |
           set -euo pipefail
-          if [ ! -f .test-review-verdict.json ]; then
-            echo "::error::automated-test-review produced no verdict file — treating as failed (no evidence tests were checked)."
-            exit 1
-          fi
-          echo "--- test-review verdict ---"
-          jq . .test-review-verdict.json
-          if ! jq -e '.schema_version == 1 and .job == "test-review" and (.findings | type == "array")' \
-              .test-review-verdict.json >/dev/null; then
-            echo "::error::verdict file does not match review-rubric/verdict.schema.json — treating as failed."
-            exit 1
-          fi
-          gating=$(jq '[.findings[] | select(.severity == "major" or .severity == "blocking")] | length' .test-review-verdict.json)
-          if [ "$gating" -gt 0 ]; then
-            echo "::error::$gating major/blocking test-review finding(s) — see the verdict artifact and the PR review."
-            exit 1
-          fi
+          dir=$(mktemp -d)
+          for f in enforce-verdict.sh verdict.schema.json; do
+            gh api -H 'Accept: application/vnd.github.raw' \
+              "repos/LaunchPadPhilly/.github/contents/review-rubric/$f?ref=$REF" > "$dir/$f"
+          done
+          bash "$dir/enforce-verdict.sh" test-review .test-review-verdict.json

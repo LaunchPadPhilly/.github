@@ -39,7 +39,66 @@ its tier, `file:line`, what is wrong and what merging as-is would
 cause, and the evidence (the triggering input or the quoted line).
 Put a one-line tally of findings by tier at the top.
 
-Post your findings as a single PR review with event type COMMENT.
-Do NOT approve this PR and do NOT request changes as a formal review
-state; this review is advisory only. A human reviewer is the merge
-gate, not you.
+Self-challenge: before you write anything, draft your findings, then
+go back through every one of them and try to knock it down. For each:
+- Re-open the file at the cited line and the code around it. Does the
+  claim still hold? Look for the guard, caller, test, or config that
+  already handles it. A finding you can no longer support is dropped.
+- Check the tier against the rubric's definition, not against how
+  strongly you felt. If the evidence only supports a lower tier,
+  downgrade it. Never raise a tier here.
+Keep each finding's first tier as `initial_severity` and the tier it
+ends at as `severity`; they differ only when you downgraded it. Record
+every finding you dropped in `dropped_findings` with the reason. A
+finding that survives unchanged has `initial_severity` equal to
+`severity`.
+
+Verdict: write a JSON verdict file to .code-review-verdict.json at the
+repo root. The calling workflow uploads it as a build artifact and
+derives pass/fail from it, so get the shape exactly right. It must
+validate against the review-rubric schema, with `job` set to
+"code-review":
+
+{
+  "schema_version": 1,
+  "job": "code-review",
+  "work_package_id": null,
+  "summary": "One real bug in the retry path; the rest is clean.",
+  "findings": [
+    {
+      "id": "F1",
+      "severity": "major",
+      "initial_severity": "blocking",
+      "title": "Retry loop never backs off",
+      "claim": "A 429 from the API is retried immediately, so a rate limit becomes a hot loop.",
+      "evidence": "src/client.ts:88 retries with no delay when status is 429. Re-checked: no caller adds a delay, but the loop is capped at 3 tries, so it is not unbounded.",
+      "file": "src/client.ts",
+      "line": 88,
+      "confidence": "high"
+    }
+  ],
+  "dropped_findings": [
+    {
+      "title": "Missing null check on user.email",
+      "initial_severity": "major",
+      "reason": "src/auth.ts:41 already rejects a null email before this code runs."
+    }
+  ]
+}
+
+`work_package_id` is null for this job. `file` and `line` are null only
+for a finding with no single location. Use `confidence: low` rather
+than inflating a finding you cannot back up; a low-confidence finding
+cannot be major or blocking. A clean PR gets `"findings": []`; omit
+`dropped_findings` if you dropped nothing. The workflow fails the job
+only if the file is missing or invalid, or if `findings` holds a
+`major` or `blocking` finding. Dropped findings never gate. You do not
+decide pass or fail.
+
+Then post your findings as a single PR review with event type COMMENT.
+The summary line at the top says how many findings the self-challenge
+dropped and downgraded, for example "2 findings dropped, 1
+downgraded", then the tally by tier. Do NOT approve this PR and do NOT
+request changes as a formal review state; the check's red or green
+comes from the verdict file, and a human reviewer is still the merge
+gate.

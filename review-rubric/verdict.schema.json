@@ -20,10 +20,28 @@
     "findings": {
       "type": "array",
       "items": { "$ref": "#/$defs/finding" }
+    },
+    "dropped_findings": {
+      "description": "Findings the self-challenge pass removed because the claim did not hold against the code. Optional: a job without a self-challenge pass omits it. Dropped findings never gate.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/dropped_finding" }
     }
   },
   "$defs": {
     "severity": { "enum": ["nitpick", "minor", "medium", "major", "blocking"] },
+    "dropped_finding": {
+      "type": "object",
+      "required": ["title", "initial_severity", "reason"],
+      "additionalProperties": false,
+      "properties": {
+        "title": { "type": "string" },
+        "initial_severity": { "$ref": "#/$defs/severity" },
+        "reason": {
+          "description": "What the re-check found in the code that disproved the claim.",
+          "type": "string"
+        }
+      }
+    },
     "finding": {
       "type": "object",
       "required": ["id", "severity", "initial_severity", "title", "claim", "evidence", "file", "line", "confidence"],
