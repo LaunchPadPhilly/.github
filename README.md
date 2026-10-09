@@ -9,7 +9,8 @@ drifts across repos.
 `.github/workflows/claude-review-reusable.yml` is a `workflow_call`
 target that runs an automatic, review-only Claude pass on every PR in
 a calling repo. It never approves or requests changes — only posts a
-`COMMENT`-type review. What the reviewer is told lives in plain files,
+`COMMENT`-type review. Its check goes red only when its verdict holds a
+`major` or `blocking` finding. What the reviewer is told lives in plain files,
 fetched at run time from this (public) repo — edit these, not the
 workflow:
 
@@ -37,7 +38,12 @@ purpose — no silent fallback to metered API billing.
 Both jobs label findings on one five-tier scale — nitpick / minor / medium /
 major / blocking — defined once in `review-rubric/rubric.md`, with the
 verdict JSON shape in `review-rubric/verdict.schema.json`. Only `major`
-and `blocking` findings are meant to fail a check.
+and `blocking` findings fail a check.
+
+Both jobs write a verdict file (`.code-review-verdict.json`,
+`.test-review-verdict.json`) and `review-rubric/enforce-verdict.sh` derives
+pass/fail from it: a missing, unparseable or schema-invalid verdict fails
+too. `review-rubric/test-enforce-verdict.sh` exercises that script.
 
 ## Automated Test Review
 
@@ -45,10 +51,9 @@ A second, separate job in the same reusable workflow judges whether a PR's
 tests actually verify the outputs committed to by its linked OpenProject
 work package, against the org's E2E-first testing ground rules (real paths
 over mocks, verifiable/repeatable artifacts, no tautological or
-narrowly-pinned regression tests). Unlike Claude Review above, **this one
-is a real merge gate**: it fails the job (red check) when tests are
-missing or inadequate, and uploads a `test-review-verdict` JSON artifact
-either way so the verdict is inspectable, not just a checkmark. Its prompt
+narrowly-pinned regression tests). Like Claude Review above, it
+fails the job (red check) only on a `major` or `blocking` finding, and it uploads
+a `test-review-verdict` JSON artifact either way so the verdict is inspectable, not just a checkmark. Its prompt
 and ground rules are `prompts/test-review.md`.
 
 The companion dev-facing skill, `.claude/skills/test-creation/SKILL.md`,
